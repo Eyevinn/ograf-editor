@@ -612,7 +612,11 @@ export default class ${className} extends HTMLElement {
             // Default per field so an empty or partial settings object still
             // produces valid CSS (an empty object is truthy, so a single
             // object-level fallback would not catch it).
-            const duration = Number.isFinite(settings.slideInDuration) ? settings.slideInDuration : 500;
+            // Coerce to a number: settings may arrive as strings (e.g. "1500"
+            // from a number input), and Number.isFinite('1500') is false, so the
+            // duration was silently falling back to 500 and edits had no effect.
+            const slideInDurationNum = Number(settings.slideInDuration);
+            const duration = Number.isFinite(slideInDurationNum) && slideInDurationNum >= 0 ? slideInDurationNum : 500;
             const timing = settings.slideInType || 'ease-out';
             const direction = settings.slideInDirection || 'left';
 
@@ -652,7 +656,8 @@ export default class ${className} extends HTMLElement {
                 return;
             }
 
-            const duration = Number.isFinite(settings.slideOutDuration) ? settings.slideOutDuration : 500;
+            const slideOutDurationNum = Number(settings.slideOutDuration);
+            const duration = Number.isFinite(slideOutDurationNum) && slideOutDurationNum >= 0 ? slideOutDurationNum : 500;
             const timing = settings.slideOutType || 'ease-in';
             const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
 
@@ -783,13 +788,26 @@ export default class ${className} extends HTMLElement {
         return {
             manifest: this.manifest,
             elements: this.elements,
-            webComponent: this.webComponent
+            webComponent: this.webComponent,
+            // Persist animation settings so the operator's slide direction,
+            // duration, and easing survive a reload. Without this they round-trip
+            // to nothing and reset to the constructor defaults on every load.
+            animationSettings: this.animationSettings
         };
     }
 
     static fromJSON(json) {
         const template = new OGrafTemplate();
         template.manifest = json.manifest;
+        // Restore persisted animation settings, merged over the constructor
+        // defaults so a partial or older saved object keeps valid values for any
+        // field it omits.
+        if (json.animationSettings) {
+            template.animationSettings = {
+                ...template.animationSettings,
+                ...json.animationSettings
+            };
+        }
         // Sanitize each element id before assignment: it is interpolated into an
         // `element-<id>` class attribute and the generateElementStyles `<style>`
         // block, so a crafted id from an imported file (e.g. `" onmouseover=...`)

@@ -10,7 +10,14 @@ export class CodeEditor {
         this.manifestEditor = null;
         this.componentEditor = null;
         this.currentTab = 'manifest';
-        
+        // True while we are programmatically setting the manifest editor value.
+        // Monaco fires onDidChangeModelContent synchronously on setValue, which
+        // would otherwise re-save the manifest and flash a success (or, for the
+        // "select a template" placeholder, a false "Invalid JSON") message on
+        // every template switch or tab open. Only genuine user edits should run
+        // onManifestChange.
+        this.suppressManifestChange = false;
+
         this.init();
     }
 
@@ -195,8 +202,11 @@ export class CodeEditor {
             const manifestJson = JSON.stringify(template.manifest, null, 2);
             
             if (this.monaco && this.manifestEditor.setValue) {
-                // Monaco Editor
+                // Monaco Editor. Suppress the change handler for this
+                // programmatic update so it does not re-save and toast.
+                this.suppressManifestChange = true;
                 this.manifestEditor.setValue(manifestJson);
+                this.suppressManifestChange = false;
             } else {
                 // Simple textarea
                 this.manifestEditor.value = manifestJson;
@@ -229,7 +239,11 @@ export class CodeEditor {
         
         if (this.manifestEditor) {
             if (this.monaco && this.manifestEditor.setValue) {
+                // Placeholder text is not valid JSON; suppress the change
+                // handler so it does not flash a false "Invalid JSON" error.
+                this.suppressManifestChange = true;
                 this.manifestEditor.setValue(manifestMessage);
+                this.suppressManifestChange = false;
             } else {
                 this.manifestEditor.value = manifestMessage;
             }
@@ -246,6 +260,8 @@ export class CodeEditor {
 
     onManifestChange() {
         if (!this.manifestEditor) return;
+        // Ignore changes we triggered ourselves via setValue.
+        if (this.suppressManifestChange) return;
 
         try {
             // Get value from either Monaco or textarea

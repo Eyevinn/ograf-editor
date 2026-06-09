@@ -967,8 +967,11 @@ export class PropertyPanel {
             template.animationSettings = {};
         }
 
-        // Update the specific animation property
-        template.animationSettings[property] = value;
+        // Update the specific animation property. Number inputs deliver strings,
+        // so coerce duration fields to numbers (the generated component and the
+        // manifest actionDurations expect numeric ms).
+        const isDuration = property === 'slideInDuration' || property === 'slideOutDuration';
+        template.animationSettings[property] = isDuration ? Number(value) : value;
         
         // Save changes
         this.templateManager.saveToStorage();
@@ -988,9 +991,17 @@ export class PropertyPanel {
 
         // Update template manifest property
         template.manifest[property] = value;
-        
+
         // Save changes
         this.templateManager.saveToStorage();
+
+        // The sidebar list shows the name and description, so it must refresh
+        // when either changes. The panel has no direct reference to the list, so
+        // notify the app via a DOM event on the visual-editor container (the same
+        // channel used for element updates).
+        this.visualEditor.container.dispatchEvent(
+            new CustomEvent('templateMetaUpdated')
+        );
     }
 
     previewAnimation(animationType) {
