@@ -61,6 +61,69 @@ class OGrafEditor {
         this.setupModalEvents();
         this.setupTemplateList();
         this.setupToolbar();
+        this.setupSidebarResizer();
+    }
+
+    // Let the user widen the sidebar by dragging the divider (or arrow keys when
+    // focused), since the Data Inputs panel needs more room than the default
+    // 300px. The chosen width is remembered across sessions.
+    setupSidebarResizer() {
+        const sidebar = document.querySelector('.sidebar');
+        const resizer = document.querySelector('.sidebar-resizer');
+        if (!sidebar || !resizer) return;
+
+        const MIN = 260;
+        const MAX = 640;
+        const STORAGE_KEY = 'ograf-sidebar-width';
+        const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
+
+        const applyWidth = (w, persist) => {
+            const width = clamp(w);
+            sidebar.style.width = `${width}px`;
+            resizer.setAttribute('aria-valuenow', String(width));
+            if (persist) {
+                try { localStorage.setItem(STORAGE_KEY, String(width)); } catch (e) { /* ignore */ }
+            }
+        };
+
+        resizer.setAttribute('aria-valuemin', String(MIN));
+        resizer.setAttribute('aria-valuemax', String(MAX));
+        const saved = (() => {
+            try { return parseInt(localStorage.getItem(STORAGE_KEY), 10); } catch (e) { return NaN; }
+        })();
+        applyWidth(Number.isFinite(saved) ? saved : sidebar.offsetWidth, false);
+
+        // Drag with the mouse.
+        resizer.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startWidth = sidebar.offsetWidth;
+            resizer.classList.add('dragging');
+            document.body.classList.add('sidebar-resizing');
+
+            const onMove = (moveEvent) => applyWidth(startWidth + (moveEvent.clientX - startX), false);
+            const onUp = () => {
+                resizer.classList.remove('dragging');
+                document.body.classList.remove('sidebar-resizing');
+                applyWidth(sidebar.offsetWidth, true);
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        // Keyboard adjustment when the divider is focused.
+        resizer.addEventListener('keydown', (e) => {
+            const step = 20;
+            if (e.key === 'ArrowLeft') {
+                applyWidth(sidebar.offsetWidth - step, true);
+                e.preventDefault();
+            } else if (e.key === 'ArrowRight') {
+                applyWidth(sidebar.offsetWidth + step, true);
+                e.preventDefault();
+            }
+        });
     }
 
     setupHeaderActions() {
