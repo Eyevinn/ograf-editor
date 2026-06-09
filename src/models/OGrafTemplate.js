@@ -621,7 +621,7 @@ export default class ${className} extends HTMLElement {
 
     interpolateContent(content) {
         const result = content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
-            const value = this.data[key] || match;
+            const value = key in this.data ? this.data[key] : match;
             return value;
         });
         return result;

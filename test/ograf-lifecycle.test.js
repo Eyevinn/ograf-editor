@@ -117,4 +117,25 @@ describe('OGraf generated component runtime lifecycle (jsdom)', () => {
 
     document.body.removeChild(el);
   });
+
+  it('renders an explicitly empty value instead of the raw token', async () => {
+    // Guards interpolateContent: an empty-string (or 0) value is a real value,
+    // not a missing key, so it must render as empty and never fall back to the
+    // literal {{token}}.
+    // Reuse the tag already registered for GraphicClass; a custom-element class
+    // can only be registered under one tag.
+    if (!customElements.get(TAG)) {
+      customElements.define(TAG, GraphicClass);
+    }
+    const el = document.createElement(TAG);
+    document.body.appendChild(el);
+
+    await el.load({ data: { name: '', title: '' }, renderType: 'realtime', renderCharacteristics: {} });
+    await el.playAction({ skipAnimation: true });
+
+    expect(el.shadowRoot.innerHTML).not.toContain('{{name}}');
+    expect(el.shadowRoot.innerHTML).not.toContain('{{title}}');
+
+    document.body.removeChild(el);
+  });
 });
