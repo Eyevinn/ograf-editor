@@ -431,6 +431,79 @@ export class OGrafTemplate {
         return this.elements.find(el => el.id === elementId);
     }
 
+    // Rename an element's id atomically. The id is used as a CSS class segment
+    // (`.element-<id>` in generateElementStyles), as the data-element-id keying
+    // the per-element animation lane lookup at play/stop time, and as the
+    // timeline-lane key in v_ografEditorTimeline.elements[<id>]. It is NOT a data
+    // token, so {{...}} content (data-input keys, a separate namespace) is left
+    // untouched.
+    //
+    // Validation here is the model-layer guard; the panel validates first for an
+    // inline error, but the model is the safe boundary for any caller. Returns
+    //   { ok: true, id }
+    //   { ok: false, reason: 'empty' | 'invalid' | 'duplicate' | 'missing' }
+    // On a no-op rename (newId equals oldId after slugify) returns ok with the
+    // unchanged id. On success the timeline lane is migrated in place, the styles
+    // and web component are regenerated, and the new id is returned.
+    renameElementId(oldId, rawNewId) {
+        const element = this.getElementById(oldId);
+        if (!element) {
+            return { ok: false, reason: 'missing' };
+        }
+
+        const trimmed = String(rawNewId == null ? '' : rawNewId).trim();
+        if (trimmed === '') {
+            return { ok: false, reason: 'empty' };
+        }
+
+        // slug-safe: lowercase letters, digits, hyphens. We require the input to
+        // already be slug-safe rather than silently coercing, so "Lower Third"
+        // is rejected with a clear error instead of becoming "lower-third"
+        // behind the user's back. (The panel may auto-slugify before calling.)
+        if (OGrafTemplate.slugifyId(trimmed) !== trimmed || !/^[a-z0-9-]+$/.test(trimmed)) {
+            return { ok: false, reason: 'invalid' };
+        }
+
+        const newId = trimmed;
+
+        // No-op: nothing to migrate, but report success so callers can treat it
+        // as "committed".
+        if (newId === oldId) {
+            return { ok: true, id: oldId };
+        }
+
+        // Unique among the template's elements.
+        if (this.elements.some(el => el.id === newId)) {
+            return { ok: false, reason: 'duplicate' };
+        }
+
+        // 1. Update the element's id.
+        element.id = newId;
+
+        // 2. Migrate the timeline lane, preserving key order so the timeline
+        //    track list does not reshuffle. Only moves an existing lane; a
+        //    missing lane is left missing (getElementTimeline lazily creates one
+        //    later if needed).
+        const timeline = this.getTimeline();
+        if (timeline.elements[oldId] !== undefined) {
+            const rebuilt = {};
+            for (const key of Object.keys(timeline.elements)) {
+                if (key === oldId) {
+                    rebuilt[newId] = timeline.elements[oldId];
+                } else {
+                    rebuilt[key] = timeline.elements[key];
+                }
+            }
+            timeline.elements = rebuilt;
+        }
+
+        // 3. Regenerate styles + web component so `.element-<id>`,
+        //    data-element-id, and the serialized timeline all reflect the new id.
+        this.generateWebComponent();
+
+        return { ok: true, id: newId };
+    }
+
     updateElement(elementId, updates) {
         const element = this.getElementById(elementId);
         if (element) {

@@ -1,4 +1,5 @@
 import { escapeHtml } from '../utils/escapeHtml.js';
+import { OGrafTemplate } from '../models/OGrafTemplate.js';
 
 export class PropertyPanel {
     constructor(containerElement, visualEditor, templateManager) {
@@ -376,8 +377,10 @@ export class PropertyPanel {
                 <h4>Element Properties</h4>
                 
                 <div class="property-group">
-                    <label>Element ID</label>
-                    <input type="text" class="property-input" data-property="id" value="${escapeHtml(element.id)}" readonly>
+                    <label for="element-id-input">Element ID</label>
+                    <input type="text" id="element-id-input" class="property-input element-id-input" data-element-id-input value="${escapeHtml(element.id)}" autocomplete="off" spellcheck="false" aria-describedby="element-id-help">
+                    <p class="data-input-error" data-element-id-error role="alert" hidden></p>
+                    <small id="element-id-help" class="help-text">Lowercase letters, numbers and hyphens. Must be unique. Used for styling and animation.</small>
                 </div>
 
                 <div class="property-group">
@@ -420,6 +423,18 @@ export class PropertyPanel {
         `;
 
         this.setupPropertyEventListeners(container);
+
+        // The panel re-renders via innerHTML after a successful id rename, which
+        // detaches the id input. Restore focus + selection so the keyboard user
+        // keeps their place on the (now renamed) field.
+        if (this.elementIdFocus) {
+            this.elementIdFocus = false;
+            const idInput = container.querySelector('[data-element-id-input]');
+            if (idInput) {
+                idInput.focus();
+                if (typeof idInput.select === 'function') idInput.select();
+            }
+        }
     }
 
     setupAnimationEventListeners() {
@@ -919,6 +934,20 @@ export class PropertyPanel {
     }
 
     setupPropertyEventListeners(container) {
+        // Element ID. Editable, but commits on change/blur only, never per
+        // keystroke, so a half-typed id is not treated as a rename. The id is a
+        // CSS class segment and the timeline-lane key, not a data token, so a
+        // rename never rewrites {{token}} content. Clear any error while editing.
+        const idInput = container.querySelector('[data-element-id-input]');
+        if (idInput) {
+            idInput.addEventListener('input', () => {
+                this.clearElementIdError(idInput);
+            });
+            const commitId = () => this.commitElementId(idInput);
+            idInput.addEventListener('change', commitId);
+            idInput.addEventListener('blur', commitId);
+        }
+
         // Basic property inputs
         const propertyInputs = container.querySelectorAll('.property-input[data-property]');
         propertyInputs.forEach(input => {
@@ -1019,6 +1048,111 @@ export class PropertyPanel {
         const updated = `${existing}{{${key}}}`;
         this.visualEditor.updateSelectedElement({ content: updated });
         this.render();
+    }
+
+    // Commit an element-id rename. Validates here for an inline error (mirrors
+    // the data-input Key validation pattern), then delegates the atomic mutation
+    // (element.id, timeline lane migration, regenerate) to the model. On success
+    // it preserves selection under the new id across the VisualEditor, this
+    // panel, the canvas, the timeline panel, and the preview.
+    commitElementId(input) {
+        // The input commits on both 'change' and 'blur'. A successful rename
+        // re-renders this panel via innerHTML, detaching the input; the trailing
+        // blur then fires against the stale node. No-op once detached.
+        if (input && !input.isConnected) return;
+        if (!this.currentElement) return;
+
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        const oldId = this.currentElement;
+        const newId = input.value.trim();
+
+        // No change: clear any error, do nothing.
+        if (newId === oldId) {
+            this.clearElementIdError(input);
+            return;
+        }
+
+        if (newId === '') {
+            this.showElementIdError(input, 'Enter an id. It cannot be empty.');
+            return;
+        }
+
+        // slug-safe: lowercase letters, numbers, hyphens only.
+        if (!/^[a-z0-9-]+$/.test(newId) || OGrafTemplate.slugifyId(newId) !== newId) {
+            this.showElementIdError(input, 'Use lowercase letters, numbers and hyphens only.');
+            return;
+        }
+
+        // Unique among the template's elements.
+        if (template.elements.some(el => el.id === newId)) {
+            this.showElementIdError(input, 'That id is already used. Pick a different one.');
+            return;
+        }
+
+        const result = template.renameElementId(oldId, newId);
+        if (!result.ok) {
+            // The model rejected it for the same reasons we checked; surface a
+            // generic message rather than silently dropping the edit.
+            this.showElementIdError(input, 'That id cannot be used. Pick a different one.');
+            return;
+        }
+
+        // Persist and keep every surface that keys off the element id in sync.
+        this.templateManager.saveToStorage();
+
+        // The selection in both the panel and the visual editor tracks the id,
+        // so move it to the new id or selection is lost on the next render.
+        this.currentElement = result.id;
+        // Keep focus on the (now renamed) id input across the re-render that the
+        // elementSelected dispatch below triggers on this panel.
+        this.elementIdFocus = true;
+        if (this.visualEditor) {
+            this.visualEditor.selectedElement = result.id;
+            this.visualEditor.render();
+            // Re-announce selection so this panel re-renders under the new id and
+            // the timeline panel (and any other listener) re-keys to it and keeps
+            // the track highlighted. This panel's elementSelected handler calls
+            // render(), which consumes elementIdFocus and restores focus.
+            this.visualEditor.dispatchEvent('elementSelected', { elementId: result.id });
+        } else {
+            this.render();
+        }
+        // The timeline panel re-keys to the new id via its own elementSelected
+        // listener; refresh it explicitly too in case the dispatch path changes.
+        this.refreshTimelinePanel();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+    }
+
+    showElementIdError(input, message) {
+        input.setAttribute('aria-invalid', 'true');
+        const errorEl = this.container.querySelector('[data-element-id-error]');
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.hidden = false;
+            // Point the input at both the help text and the error for AT users.
+            input.setAttribute('aria-describedby', 'element-id-help element-id-error');
+            errorEl.id = 'element-id-error';
+        }
+        input.focus();
+        if (typeof input.select === 'function') {
+            input.select();
+        }
+    }
+
+    clearElementIdError(input) {
+        if (input) {
+            input.removeAttribute('aria-invalid');
+            input.setAttribute('aria-describedby', 'element-id-help');
+        }
+        const errorEl = this.container.querySelector('[data-element-id-error]');
+        if (errorEl) {
+            errorEl.textContent = '';
+            errorEl.hidden = true;
+        }
     }
 
     updateElementProperty(property, value) {
