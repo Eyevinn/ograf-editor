@@ -21,6 +21,18 @@ export class OGrafTemplate {
         
         this.elements = [];
         this.webComponent = null;
+
+        // Default animation settings so a freshly created template animates.
+        // The generated component also defaults per field defensively, so a
+        // partial or empty object never produces invalid CSS.
+        this.animationSettings = {
+            slideInDuration: 500,
+            slideInType: 'ease-out',
+            slideInDirection: 'left',
+            slideOutDuration: 500,
+            slideOutType: 'ease-in',
+            slideOutDirection: 'left'
+        };
     }
 
     // Turn arbitrary user input into a safe OGraf id: lowercase, hyphen-separated,
@@ -479,22 +491,21 @@ export default class ${className} extends HTMLElement {
 
     animateSlideIn() {
         return new Promise((resolve) => {
-            const settings = this.animationSettings || {
-                slideInDuration: 500,
-                slideInType: 'ease-out',
-                slideInDirection: 'left'
-            };
-            
+            const settings = this.animationSettings || {};
+
             const elements = this.shadowRoot.querySelectorAll('.element');
             if (elements.length === 0) {
                 resolve();
                 return;
             }
-            
-            const duration = settings.slideInDuration;
-            const timing = settings.slideInType;
-            const direction = settings.slideInDirection;
-            
+
+            // Default per field so an empty or partial settings object still
+            // produces valid CSS (an empty object is truthy, so a single
+            // object-level fallback would not catch it).
+            const duration = Number.isFinite(settings.slideInDuration) ? settings.slideInDuration : 500;
+            const timing = settings.slideInType || 'ease-out';
+            const direction = settings.slideInDirection || 'left';
+
             let transform = '';
             switch (direction) {
                 case 'left': transform = 'translateX(-100%)'; break;
@@ -510,8 +521,9 @@ export default class ${className} extends HTMLElement {
                 element.style.transition = 'none';
             });
             
-            // Force a reflow to ensure the initial transform is applied
-            this.shadowRoot.offsetHeight;
+            // Force a reflow on the host so the initial transform is committed
+            // before the transition is enabled (ShadowRoot has no offsetHeight).
+            void this.offsetHeight;
             
             elements.forEach(element => {
                 element.style.transition = \`transform \${duration}ms \${timing}\`;
@@ -529,20 +541,16 @@ export default class ${className} extends HTMLElement {
     
     animateSlideOut() {
         return new Promise((resolve) => {
-            const settings = this.animationSettings || {
-                slideOutDuration: 500,
-                slideOutType: 'ease-in',
-                slideOutDirection: 'left'
-            };
-            
+            const settings = this.animationSettings || {};
+
             const elements = this.shadowRoot.querySelectorAll('.element');
             if (elements.length === 0) {
                 resolve();
                 return;
             }
-            
-            const duration = settings.slideOutDuration;
-            const timing = settings.slideOutType;
+
+            const duration = Number.isFinite(settings.slideOutDuration) ? settings.slideOutDuration : 500;
+            const timing = settings.slideOutType || 'ease-in';
             const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
             
             let transform = '';
