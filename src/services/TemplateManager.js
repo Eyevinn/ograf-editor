@@ -105,11 +105,30 @@ export class TemplateManager {
             }
 
             const template = new OGrafTemplate();
-            
+
             // First set up the manifest and elements
             template.manifest = manifest;
-            template.elements = this.createElementsFromSchema(manifest);
-            
+            // Prefer authored editor elements persisted under the vendor key
+            // (v_ografEditorElements). Regenerating from the schema only yields
+            // default-positioned text elements and silently discards authored
+            // geometry/style/content and any rect/circle/image elements. Element
+            // ids are sanitized via slugifyId because they are spliced into an
+            // `element-<id>` class attribute and a generated <style> block.
+            if (Array.isArray(manifest.v_ografEditorElements)) {
+                template.elements = manifest.v_ografEditorElements.map(element => ({
+                    ...element,
+                    id: OGrafTemplate.slugifyId(element.id)
+                }));
+            } else {
+                template.elements = this.createElementsFromSchema(manifest);
+            }
+            // Restore the authored timeline if it was persisted alongside the
+            // elements, so a manifest/bundle round-trip keeps the animation
+            // timeline rather than resetting it.
+            if (manifest.v_ografEditorTimeline !== undefined) {
+                template.timeline = manifest.v_ografEditorTimeline;
+            }
+
             // Then handle the component code
             if (componentCode && this.isValidComponentCode(componentCode)) {
                 template.webComponent = this.cleanComponentCode(componentCode);
@@ -152,13 +171,31 @@ export class TemplateManager {
 
         // Create elements based on schema properties
         let yPosition = 100;
+        // Track generated ids so keys that slugify to the same value (e.g.
+        // "Title" and "title", or "a.b" and "a-b") get distinct element ids
+        // instead of colliding into one, which would break per-element style and
+        // animation lookup.
+        const usedIds = new Set();
+        const uniqueElementId = (key) => {
+            const base = OGrafTemplate.slugifyId(key);
+            let id = base;
+            let counter = 2;
+            while (usedIds.has(id)) {
+                id = `${base}-${counter}`;
+                counter += 1;
+            }
+            usedIds.add(id);
+            return id;
+        };
         Object.entries(manifest.schema.properties).forEach(([key, prop], index) => {
             if (prop.type === 'string') {
                 elements.push({
                     // Sanitize the schema key before using it as an element id:
                     // it becomes a CSS class/selector segment, so a crafted key
                     // could otherwise inject into the generated style block.
-                    id: OGrafTemplate.slugifyId(key),
+                    // De-duplicated so case/punctuation-only differences do not
+                    // collapse into one id.
+                    id: uniqueElementId(key),
                     type: 'text',
                     x: 100,
                     y: yPosition + (index * 60),
@@ -183,7 +220,9 @@ export class TemplateManager {
             const minY = Math.min(...elements.map(el => el.y)) - 10;
 
             elements.unshift({
-                id: 'background',
+                // Dedup against schema-derived ids in case a property slugified
+                // to "background".
+                id: uniqueElementId('background'),
                 type: 'rect',
                 x: minX,
                 y: minY,
@@ -257,11 +296,31 @@ export class TemplateManager {
             for (const [id, template] of this.templates) {
                 templatesData[id] = template.toJSON();
             }
-            
+
             localStorage.setItem('ograf-templates', JSON.stringify(templatesData));
-            localStorage.setItem('ograf-current-template', 
+            localStorage.setItem('ograf-current-template',
                 this.currentTemplate ? this.currentTemplate.manifest.id : null);
+            this.lastStorageError = null;
         } catch (error) {
+            // A failed save means the user's work was not persisted (commonly a
+            // QuotaExceededError or a disabled/full localStorage). Swallowing it
+            // silently causes data loss the user never sees. Surface it: record a
+            // flag, log a clear message, and dispatch an event the app can show.
+            this.lastStorageError = error;
+            const message = `Failed to save templates to local storage: ${error && error.message ? error.message : error}. Your latest changes may not be persisted.`;
+            console.error(message, error);
+            this.dispatchStorageError(message, error);
+        }
+    }
+
+    // Notify the host app of a storage failure without coupling this service to
+    // any specific UI. The main app (or any listener) can show a visible error.
+    // Guarded so it is a no-op in non-browser/test environments.
+    dispatchStorageError(message, error) {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('ograf-storage-error', {
+                detail: { message, error }
+            }));
         }
     }
 
@@ -269,9 +328,18 @@ export class TemplateManager {
         try {
             const templatesData = localStorage.getItem('ograf-templates');
             const currentTemplateId = localStorage.getItem('ograf-current-template');
-            
+
             if (templatesData) {
-                const parsed = JSON.parse(templatesData);
+                let parsed;
+                try {
+                    parsed = JSON.parse(templatesData);
+                } catch (parseError) {
+                    // Corrupt top-level JSON: do not silently drop everything with
+                    // no trace. Log clearly and continue with an empty set so the
+                    // app still starts.
+                    console.error('Failed to parse stored templates (corrupt JSON). Starting with no templates.', parseError);
+                    return;
+                }
                 for (const [id, templateData] of Object.entries(parsed)) {
                     try {
                         const template = OGrafTemplate.fromJSON(templateData);
@@ -286,6 +354,9 @@ export class TemplateManager {
                             this.templates.set(id, template);
                         }
                     } catch (templateError) {
+                        // Skip a single corrupt template rather than dropping all,
+                        // but make the skip visible.
+                        console.error(`Failed to load stored template "${id}"; skipping it.`, templateError);
                     }
                 }
             }
@@ -294,6 +365,9 @@ export class TemplateManager {
                 this.currentTemplate = this.templates.get(currentTemplateId);
             }
         } catch (error) {
+            // Unexpected failure (e.g. localStorage access throwing). Log clearly
+            // and continue with whatever loaded rather than failing to start.
+            console.error('Failed to load templates from local storage.', error);
         }
     }
 
