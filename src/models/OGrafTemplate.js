@@ -373,8 +373,17 @@ export class OGrafTemplate {
     }
 
     addElement(element) {
+        // Date.now() alone collides for elements added within the same
+        // millisecond, producing duplicate ids that break per-element style and
+        // animation lookup. Combine the timestamp with a random suffix and then
+        // guarantee uniqueness against existing ids.
+        const existingIds = new Set(this.elements.map(el => el.id));
+        let id = `element_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        while (existingIds.has(id)) {
+            id = `element_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        }
         this.elements.push({
-            id: `element_${Date.now()}`,
+            id,
             ...element
         });
     }
@@ -780,6 +789,18 @@ export default class ${className} extends HTMLElement {
             if (key.startsWith('v_') && value !== undefined) {
                 clean[key] = value;
             }
+        }
+        // Persist the authored editor elements (and timeline, if any) under
+        // v_-prefixed vendor keys. The OGraf v1 schema allows any ^v_.* property
+        // (patternProperties) even under additionalProperties:false, so this stays
+        // spec-valid. Without this, a manifest/bundle round-trip rebuilds elements
+        // from the schema with default positions, discarding authored
+        // x/y/width/height/style/content and any rect/circle/image elements.
+        if (Array.isArray(this.elements) && this.elements.length > 0) {
+            clean.v_ografEditorElements = this.elements;
+        }
+        if (this.timeline !== undefined && this.timeline !== null) {
+            clean.v_ografEditorTimeline = this.timeline;
         }
         return clean;
     }

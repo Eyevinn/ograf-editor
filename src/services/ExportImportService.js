@@ -144,7 +144,12 @@ export class ExportImportService {
                 id: OGrafTemplate.slugifyId(element.id)
             }));
         }
-        
+
+        // Restore the authored timeline if it was persisted in the editor export.
+        if (templateData.timeline !== undefined) {
+            template.timeline = templateData.timeline;
+        }
+
         return template;
     }
 
