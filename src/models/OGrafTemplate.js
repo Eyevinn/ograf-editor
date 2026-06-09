@@ -489,6 +489,34 @@ export default class ${className} extends HTMLElement {
         }
     }
 
+    // Compute the transform that places the whole graphic just off the given
+    // stage edge, derived from the stage size and the elements' bounding box.
+    // This makes the graphic slide fully on/off screen as a unit, regardless of
+    // element size or position. A self-relative percentage (translateX(100%))
+    // only moved an element by its own width, so a small element parked on the
+    // left appeared to start mid-stage instead of off the right edge.
+    offStageTransform(direction) {
+        const elements = this.shadowRoot.querySelectorAll('.element');
+        const stageW = this.offsetWidth || 1920;
+        const stageH = this.offsetHeight || 1080;
+        let minLeft = Infinity, maxRight = -Infinity, minTop = Infinity, maxBottom = -Infinity;
+        elements.forEach(el => {
+            const left = el.offsetLeft;
+            const top = el.offsetTop;
+            minLeft = Math.min(minLeft, left);
+            maxRight = Math.max(maxRight, left + el.offsetWidth);
+            minTop = Math.min(minTop, top);
+            maxBottom = Math.max(maxBottom, top + el.offsetHeight);
+        });
+        switch (direction) {
+            case 'right': return \`translate(\${stageW - minLeft}px, 0px)\`;
+            case 'top': return \`translate(0px, \${-maxBottom}px)\`;
+            case 'bottom': return \`translate(0px, \${stageH - minTop}px)\`;
+            case 'left':
+            default: return \`translate(\${-maxRight}px, 0px)\`;
+        }
+    }
+
     animateSlideIn() {
         return new Promise((resolve) => {
             const settings = this.animationSettings || {};
@@ -506,34 +534,27 @@ export default class ${className} extends HTMLElement {
             const timing = settings.slideInType || 'ease-out';
             const direction = settings.slideInDirection || 'left';
 
-            let transform = '';
-            switch (direction) {
-                case 'left': transform = 'translateX(-100%)'; break;
-                case 'right': transform = 'translateX(100%)'; break;
-                case 'top': transform = 'translateY(-100%)'; break;
-                case 'bottom': transform = 'translateY(100%)'; break;
-                default: transform = 'translateX(-100%)';
-            }
-            
+            // Start fully off the chosen stage edge, then slide to rest.
+            const startTransform = this.offStageTransform(direction);
+
             elements.forEach(element => {
-                // Set initial position before animation
-                element.style.transform = transform;
+                element.style.transform = startTransform;
                 element.style.transition = 'none';
             });
-            
+
             // Force a reflow on the host so the initial transform is committed
             // before the transition is enabled (ShadowRoot has no offsetHeight).
             void this.offsetHeight;
-            
+
             elements.forEach(element => {
                 element.style.transition = \`transform \${duration}ms \${timing}\`;
-                
-                // Trigger animation
+
+                // Trigger animation to the resting position.
                 requestAnimationFrame(() => {
-                    element.style.transform = 'translateX(0) translateY(0)';
+                    element.style.transform = 'translate(0px, 0px)';
                 });
             });
-            
+
             // Resolve after animation completes
             setTimeout(resolve, duration);
         });
@@ -552,19 +573,13 @@ export default class ${className} extends HTMLElement {
             const duration = Number.isFinite(settings.slideOutDuration) ? settings.slideOutDuration : 500;
             const timing = settings.slideOutType || 'ease-in';
             const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
-            
-            let transform = '';
-            switch (direction) {
-                case 'left': transform = 'translateX(-100%)'; break;
-                case 'right': transform = 'translateX(100%)'; break;
-                case 'top': transform = 'translateY(-100%)'; break;
-                case 'bottom': transform = 'translateY(100%)'; break;
-                default: transform = 'translateX(-100%)';
-            }
-            
+
+            // Slide the whole graphic off the chosen stage edge as a unit.
+            const endTransform = this.offStageTransform(direction);
+
             elements.forEach(element => {
                 element.style.transition = \`transform \${duration}ms \${timing}\`;
-                element.style.transform = transform;
+                element.style.transform = endTransform;
             });
             
             // Resolve after animation completes
