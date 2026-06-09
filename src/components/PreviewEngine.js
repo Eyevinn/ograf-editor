@@ -102,8 +102,19 @@ export class PreviewEngine {
         try {
             const template = this.templateManager.getCurrentTemplate();
             if (!template) {
+                this.teardownComponent();
+                this.updateControlButtons();
+                this.currentTemplate = null;
                 this.renderEmptyState();
                 return;
+            }
+
+            // When the selected template actually changes, drop the previous
+            // template's preview data so its keys do not leak into the new one.
+            // renderDataInputs repopulates from the new template's schema.
+            const previousId = this.currentTemplate && this.currentTemplate.manifest.id;
+            if (previousId !== template.manifest.id) {
+                this.previewData = {};
             }
 
             this.currentTemplate = template;
@@ -183,10 +194,37 @@ export class PreviewEngine {
         });
     }
 
+    // Stop, dispose, and forget the current component, and reset playback
+    // state. Called whenever the preview frame is rebuilt (template switch or
+    // re-render), so the preview never keeps a previous template's component,
+    // "Playing..." button, or play flag.
+    teardownComponent() {
+        if (this.currentComponent) {
+            try {
+                if (this.isPlaying && typeof this.currentComponent.stopAction === 'function') {
+                    this.currentComponent.stopAction({ skipAnimation: true });
+                }
+                if (typeof this.currentComponent.dispose === 'function') {
+                    this.currentComponent.dispose({});
+                }
+            } catch (error) {
+                // Ignore teardown errors; the component is being discarded.
+            }
+        }
+        this.currentComponent = null;
+        this.isPlaying = false;
+        this.previewContentCreated = false;
+    }
+
     setupPreviewDocument() {
         if (!this.previewFrame || !this.currentTemplate) return;
 
         try {
+            // Tear down any component from the previous render before wiping the
+            // frame, then reflect the stopped state in the controls.
+            this.teardownComponent();
+            this.updateControlButtons();
+
             // Clear previous content first
             this.previewFrame.innerHTML = '';
             
