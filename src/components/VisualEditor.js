@@ -1,3 +1,12 @@
+// Inline gray placeholder so a new image element has no external runtime
+// dependency (via.placeholder.com is defunct). A 1x1 SVG scaled by the element.
+const PLACEHOLDER_IMAGE = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">' +
+    '<rect width="100" height="100" fill="#808080"/>' +
+    '<rect x="1" y="1" width="98" height="98" fill="none" stroke="#606060" stroke-width="2"/>' +
+    '</svg>'
+);
+
 export class VisualEditor {
     constructor(containerElement, templateManager) {
         this.container = containerElement;
@@ -8,7 +17,19 @@ export class VisualEditor {
         this.resizeState = null;
         this.scale = 1;
         this.panOffset = { x: 0, y: 0 };
-        
+
+        // Bind handlers once so add/removeEventListener use the same refs and
+        // destroy() actually detaches them (a fresh .bind() each call cannot be
+        // removed, which would leak a torn-down editor's document keydown and
+        // keep deleting elements).
+        this._onMouseDown = this.handleMouseDown.bind(this);
+        this._onClick = this.handleClick.bind(this);
+        this._onContextMenu = (e) => e.preventDefault();
+        this._onMouseMove = this.handleMouseMove.bind(this);
+        this._onMouseUp = this.handleMouseUp.bind(this);
+        this._onKeyDown = this.handleKeyDown.bind(this);
+        this._onWheel = this.handleWheel.bind(this);
+
         this.init();
     }
 
@@ -35,21 +56,21 @@ export class VisualEditor {
 
     setupEventListeners() {
         // Canvas events
-        this.canvas.addEventListener('mousedown', this.handleMouseDown.bind(this));
-        this.canvas.addEventListener('click', this.handleClick.bind(this));
+        this.canvas.addEventListener('mousedown', this._onMouseDown);
+        this.canvas.addEventListener('click', this._onClick);
 
         // Document events for dragging (so it works when mouse leaves canvas)
-        document.addEventListener('mousemove', this.handleMouseMove.bind(this));
-        document.addEventListener('mouseup', this.handleMouseUp.bind(this));
+        document.addEventListener('mousemove', this._onMouseMove);
+        document.addEventListener('mouseup', this._onMouseUp);
 
         // Keyboard events
-        document.addEventListener('keydown', this.handleKeyDown.bind(this));
+        document.addEventListener('keydown', this._onKeyDown);
 
         // Prevent context menu on canvas
-        this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+        this.canvas.addEventListener('contextmenu', this._onContextMenu);
 
         // Zoom and pan
-        this.container.addEventListener('wheel', this.handleWheel.bind(this));
+        this.container.addEventListener('wheel', this._onWheel);
     }
 
     handleMouseDown(e) {
@@ -96,6 +117,11 @@ export class VisualEditor {
     }
 
     handleKeyDown(e) {
+        // Do not treat keys as canvas shortcuts while the user types in a form
+        // control (e.g. a Property Panel input) or contentEditable surface.
+        const t = e.target;
+        if (t && ((t.matches && t.matches('input, textarea, select')) || t.isContentEditable)) return;
+
         if (e.key === 'Delete' && this.selectedElement) {
             this.deleteSelectedElement();
         } else if (e.key === 'Escape') {
@@ -129,9 +155,13 @@ export class VisualEditor {
         const template = this.templateManager.getCurrentTemplate();
         if (!template) return null;
 
-        // Convert screen coordinates to canvas coordinates
-        const canvasX = x / this.scale - this.panOffset.x;
-        const canvasY = y / this.scale - this.panOffset.y;
+        // Convert rect-relative coordinates to canvas-local coordinates. The
+        // canvas transform is scale() then translate(panOffset) with
+        // transform-origin top-left, so getBoundingClientRect() already
+        // reflects the pan. Dividing by scale is the complete inverse; adding a
+        // pan term here would subtract the pan a second time.
+        const canvasX = x / this.scale;
+        const canvasY = y / this.scale;
 
         // Check elements in reverse order (top to bottom)
         for (let i = template.elements.length - 1; i >= 0; i--) {
@@ -165,11 +195,12 @@ export class VisualEditor {
     }
 
     startDrag(element, e) {
-        // Use canvas coordinates calculated in handleMouseDown
+        // getBoundingClientRect already includes the pan; (client - rect)/scale
+        // is the full screen->canvas-local inverse.
         const canvasRect = this.canvas.getBoundingClientRect();
-        const canvasX = (e.clientX - canvasRect.left) / this.scale - this.panOffset.x;
-        const canvasY = (e.clientY - canvasRect.top) / this.scale - this.panOffset.y;
-        
+        const canvasX = (e.clientX - canvasRect.left) / this.scale;
+        const canvasY = (e.clientY - canvasRect.top) / this.scale;
+
         this.dragState = {
             element,
             startX: canvasX,
@@ -184,11 +215,11 @@ export class VisualEditor {
     updateDrag(e) {
         if (!this.dragState) return;
 
-        // Get canvas bounds to calculate relative position
+        // Get canvas bounds to calculate relative position (rect includes pan).
         const canvasRect = this.canvas.getBoundingClientRect();
-        const canvasX = (e.clientX - canvasRect.left) / this.scale - this.panOffset.x;
-        const canvasY = (e.clientY - canvasRect.top) / this.scale - this.panOffset.y;
-        
+        const canvasX = (e.clientX - canvasRect.left) / this.scale;
+        const canvasY = (e.clientY - canvasRect.top) / this.scale;
+
         const deltaX = canvasX - this.dragState.startX;
         const deltaY = canvasY - this.dragState.startY;
 
@@ -205,11 +236,11 @@ export class VisualEditor {
     }
 
     startResize(element, handle, e) {
-        // Use canvas coordinates calculated in handleMouseDown
+        // rect includes pan; (client - rect)/scale is the full inverse.
         const canvasRect = this.canvas.getBoundingClientRect();
-        const canvasX = (e.clientX - canvasRect.left) / this.scale - this.panOffset.x;
-        const canvasY = (e.clientY - canvasRect.top) / this.scale - this.panOffset.y;
-        
+        const canvasX = (e.clientX - canvasRect.left) / this.scale;
+        const canvasY = (e.clientY - canvasRect.top) / this.scale;
+
         this.resizeState = {
             element,
             handle,
@@ -225,11 +256,11 @@ export class VisualEditor {
     updateResize(e) {
         if (!this.resizeState) return;
 
-        // Get canvas bounds to calculate relative position
+        // Get canvas bounds to calculate relative position (rect includes pan).
         const canvasRect = this.canvas.getBoundingClientRect();
-        const currentX = (e.clientX - canvasRect.left) / this.scale - this.panOffset.x;
-        const currentY = (e.clientY - canvasRect.top) / this.scale - this.panOffset.y;
-        
+        const currentX = (e.clientX - canvasRect.left) / this.scale;
+        const currentY = (e.clientY - canvasRect.top) / this.scale;
+
         const deltaX = currentX - this.resizeState.startX;
         const deltaY = currentY - this.resizeState.startY;
 
@@ -262,9 +293,21 @@ export class VisualEditor {
                 break;
         }
 
-        // Ensure minimum size
+        // Ensure minimum size.
         newWidth = Math.max(10, newWidth);
         newHeight = Math.max(10, newHeight);
+
+        // Recompute the moving edge from the FIXED (anchored) edge after the
+        // clamp. Otherwise newX/newY were derived from the unclamped delta, so
+        // the anchored edge slides once the element hits its minimum size.
+        const fixedRight = this.resizeState.elementStartX + this.resizeState.elementStartWidth;
+        const fixedBottom = this.resizeState.elementStartY + this.resizeState.elementStartHeight;
+        if (handle === 'nw' || handle === 'sw') {
+            newX = fixedRight - newWidth; // right edge stays put
+        }
+        if (handle === 'nw' || handle === 'ne') {
+            newY = fixedBottom - newHeight; // bottom edge stays put
+        }
 
         this.updateElementBounds(element.id, newX, newY, newWidth, newHeight);
     }
@@ -335,7 +378,7 @@ export class VisualEditor {
             case 'text':
                 return 'New Text';
             case 'image':
-                return 'https://via.placeholder.com/100x100';
+                return PLACEHOLDER_IMAGE;
             default:
                 return '';
         }
@@ -421,7 +464,7 @@ export class VisualEditor {
             div.style.alignItems = 'center';
         } else if (element.type === 'image') {
             const img = document.createElement('img');
-            img.src = element.content || 'https://via.placeholder.com/100x100';
+            img.src = element.content || PLACEHOLDER_IMAGE;
             img.style.width = '100%';
             img.style.height = '100%';
             img.style.objectFit = element.style?.objectFit || 'contain';
@@ -493,12 +536,13 @@ export class VisualEditor {
     }
 
     destroy() {
-        // Clean up event listeners
-        this.canvas.removeEventListener('mousedown', this.handleMouseDown);
-        this.canvas.removeEventListener('click', this.handleClick);
-        document.removeEventListener('mousemove', this.handleMouseMove);
-        document.removeEventListener('mouseup', this.handleMouseUp);
-        document.removeEventListener('keydown', this.handleKeyDown);
-        this.container.removeEventListener('wheel', this.handleWheel);
+        // Clean up event listeners (same bound refs used to add them).
+        this.canvas.removeEventListener('mousedown', this._onMouseDown);
+        this.canvas.removeEventListener('click', this._onClick);
+        this.canvas.removeEventListener('contextmenu', this._onContextMenu);
+        document.removeEventListener('mousemove', this._onMouseMove);
+        document.removeEventListener('mouseup', this._onMouseUp);
+        document.removeEventListener('keydown', this._onKeyDown);
+        this.container.removeEventListener('wheel', this._onWheel);
     }
 }
