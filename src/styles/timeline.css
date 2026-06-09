@@ -128,6 +128,27 @@
     overflow-x: auto;
 }
 
+/* The ruler row's lanes-area lays out a 64px lane-tag spacer + the ruler track
+   so the ruler ticks and playhead share the exact x-origin of every
+   .timeline-lane-track below (which is also preceded by a 64px .timeline-lane-tag).
+   Without this, a keyframe at time t rendered 64px right of the tick/playhead
+   for the same t. */
+.timeline-ruler-row .timeline-lanes-area {
+    display: flex;
+    align-items: stretch;
+}
+
+.timeline-ruler-lane-spacer {
+    /* matches .timeline-lane-tag width so the ruler track aligns with lane tracks */
+    pointer-events: none;
+}
+
+.timeline-ruler-track {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
 .timeline-ruler {
     position: relative;
     height: 18px;

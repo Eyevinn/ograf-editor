@@ -203,8 +203,25 @@ export class TimelinePanel {
 
     // ---- render ------------------------------------------------------------
 
+    // Drop a stale selection that points at an element not in the current
+    // template (e.g. after switching templates). Leaving it set would make
+    // getLane lazily create a phantom lane for a non-existent element and
+    // wrongly enable Add keyframe.
+    validateSelection() {
+        const template = this.template();
+        const ids = template && Array.isArray(template.elements)
+            ? template.elements.map(el => el.id)
+            : [];
+        if (this.selectedElementId !== null && !ids.includes(this.selectedElementId)) {
+            this.selectedElementId = null;
+            this.selectedLane = 'in';
+            this.selectedKeyframeIndex = null;
+        }
+    }
+
     render() {
         if (!this.panel) return;
+        this.validateSelection();
         this.applyPanelSize();
         this.panel.classList.toggle('collapsed', this.collapsed);
 
@@ -245,6 +262,7 @@ export class TimelinePanel {
         if (!this.collapsed && template) {
             this.bindBody();
         }
+        this.restoreInspectorFocus();
     }
 
     renderTransport() {
@@ -273,8 +291,11 @@ export class TimelinePanel {
                 <div class="timeline-ruler-row">
                     <div class="timeline-track-label timeline-ruler-spacer" aria-hidden="true"></div>
                     <div class="timeline-lanes-area">
-                        ${this.renderRuler(rulerMs, rulerPx)}
-                        ${this.renderPlayhead()}
+                        <span class="timeline-lane-tag timeline-ruler-lane-spacer" aria-hidden="true"></span>
+                        <div class="timeline-ruler-track">
+                            ${this.renderRuler(rulerMs, rulerPx)}
+                            ${this.renderPlayhead()}
+                        </div>
                     </div>
                 </div>
                 <div class="timeline-tracks">
@@ -608,24 +629,73 @@ export class TimelinePanel {
 
     // ---- edit actions ------------------------------------------------------
 
-    // Add a keyframe at the playhead capturing the element's current visual
-    // state. For a fresh lane we seed sensible props from the element so the
-    // first frame is meaningful (opacity from style, no offset, scale 1).
+    // Add a keyframe at the playhead. Seed its props by sampling the lane's
+    // existing animation at the playhead time (linear interpolation between the
+    // surrounding keyframes) so adding a frame mid-slide does not introduce a
+    // kink: the new frame lies exactly on the current curve. For a fresh lane we
+    // seed sensible props from the element (opacity from style, no offset,
+    // scale 1).
     addKeyframeAtPlayhead() {
         const template = this.template();
         if (!template || !this.selectedElementId) return;
         const element = template.getElementById(this.selectedElementId);
         if (!element) return;
 
-        const opacity = element.style && element.style.opacity !== undefined
-            ? Number(element.style.opacity)
-            : 1;
-        const props = { opacity, tx: 0, ty: 0, scale: 1 };
-        const kf = template.addKeyframe(this.selectedElementId, this.selectedLane, this.playhead, props);
         const lane = template.getLane(this.selectedElementId, this.selectedLane);
+        const props = this.sampleLaneAt(lane, this.playhead, element);
+        const kf = template.addKeyframe(this.selectedElementId, this.selectedLane, this.playhead, props);
         this.selectedKeyframeIndex = lane.keyframes.indexOf(kf);
         this.persist();
         this.render();
+    }
+
+    // Interpolate a lane's animated props at time t. Linearly blends between the
+    // surrounding keyframes; before the first / after the last keyframe it holds
+    // the nearest neighbour's value (no extrapolation). On an empty lane it
+    // falls back to the element's resting state. Returns { opacity, tx, ty, scale }.
+    sampleLaneAt(lane, t, element) {
+        const fallback = () => ({
+            opacity: element && element.style && element.style.opacity !== undefined
+                ? Number(element.style.opacity)
+                : 1,
+            tx: 0,
+            ty: 0,
+            scale: 1
+        });
+
+        const kfs = (lane && Array.isArray(lane.keyframes)) ? lane.keyframes : [];
+        if (kfs.length === 0) return fallback();
+
+        const sorted = kfs.slice().sort((a, b) => (a.t || 0) - (b.t || 0));
+        const base = fallback();
+        // Resolve one prop at time t across the sorted keyframes.
+        const resolve = (key) => {
+            // Keyframes that actually define this prop.
+            const defined = sorted.filter(kf => kf.props && kf.props[key] !== undefined && kf.props[key] !== null);
+            if (defined.length === 0) return base[key];
+            if (t <= defined[0].t) return Number(defined[0].props[key]);
+            if (t >= defined[defined.length - 1].t) return Number(defined[defined.length - 1].props[key]);
+            for (let i = 0; i < defined.length - 1; i++) {
+                const a = defined[i];
+                const b = defined[i + 1];
+                if (t >= a.t && t <= b.t) {
+                    const span = (b.t - a.t) || 1;
+                    const frac = (t - a.t) / span;
+                    const av = Number(a.props[key]);
+                    const bv = Number(b.props[key]);
+                    return av + (bv - av) * frac;
+                }
+            }
+            return base[key];
+        };
+
+        const round = (n) => Math.round(n * 1000) / 1000;
+        return {
+            opacity: round(resolve('opacity')),
+            tx: round(resolve('tx')),
+            ty: round(resolve('ty')),
+            scale: round(resolve('scale'))
+        };
     }
 
     removeSelectedKeyframe() {
@@ -642,8 +712,11 @@ export class TimelinePanel {
         if (!template || this.selectedKeyframeIndex === null) return;
         template.updateKeyframe(this.selectedElementId, this.selectedLane, this.selectedKeyframeIndex, { [prop]: value });
         this.persist();
-        // Keep the panel state; no full re-render needed for a value change, but
-        // re-render so the summary/durations update.
+        // The panel re-renders via innerHTML so the committed control's element
+        // ref dies and focus is lost. Stash which field had focus and restore it
+        // after the re-render (mirrors PropertyPanel.restoreDataInputFocus).
+        this.inspectorFocusTarget = prop === 'easing' ? { easing: true } : { prop };
+        // Re-render so summary/durations update.
         this.render();
     }
 
@@ -652,7 +725,25 @@ export class TimelinePanel {
         if (!template || !this.selectedElementId) return;
         template.setLaneDelay(this.selectedElementId, this.selectedLane, value);
         this.persist();
+        this.inspectorFocusTarget = { delay: true };
         this.render();
+    }
+
+    // Reapply focus to the inspector control the user just edited, after the
+    // innerHTML re-render replaced it.
+    restoreInspectorFocus() {
+        const target = this.inspectorFocusTarget;
+        this.inspectorFocusTarget = null;
+        if (!target) return;
+        let el = null;
+        if (target.easing) {
+            el = this.panel.querySelector('[data-kf-easing]');
+        } else if (target.delay) {
+            el = this.panel.querySelector('[data-lane-delay]');
+        } else if (target.prop) {
+            el = this.panel.querySelector(`[data-kf-prop="${target.prop}"]`);
+        }
+        if (el) el.focus();
     }
 
     // ---- local preview on the live canvas nodes ----------------------------
