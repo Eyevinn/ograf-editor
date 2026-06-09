@@ -8,12 +8,14 @@ export class TemplateManager {
     }
 
     createTemplate(type, id, name, description) {
-        if (this.templates.has(id)) {
-            throw new Error(`Template with id "${id}" already exists`);
+        // Slugify up front so the Map key matches the template's safe manifest id.
+        const safeId = OGrafTemplate.slugifyId(id);
+        if (this.templates.has(safeId)) {
+            throw new Error(`Template with id "${safeId}" already exists`);
         }
 
-        const template = OGrafTemplate.createFromType(type, id, name, description);
-        this.templates.set(id, template);
+        const template = OGrafTemplate.createFromType(type, safeId, name, description);
+        this.templates.set(template.manifest.id, template);
         this.currentTemplate = template;
         this.saveToStorage();
         

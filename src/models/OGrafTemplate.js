@@ -23,9 +23,20 @@ export class OGrafTemplate {
         this.webComponent = null;
     }
 
+    // Turn arbitrary user input into a safe OGraf id: lowercase, hyphen-separated,
+    // only [a-z0-9-]. e.g. "My Lower Third" -> "my-lower-third".
+    static slugifyId(rawId) {
+        const slug = String(rawId || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        return slug || 'template';
+    }
+
     static createFromType(type, id, name, description) {
         const template = new OGrafTemplate();
-        template.manifest.id = id;
+        template.manifest.id = OGrafTemplate.slugifyId(id);
         template.manifest.name = name;
         template.manifest.description = description;
         
@@ -341,86 +352,131 @@ export class OGrafTemplate {
         return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
     }
 
+    // Build a custom-element tag that is always valid, regardless of the id.
+    // Rules: lowercase, only [a-z0-9-], collapse repeats, no leading digit/hyphen,
+    // and it must contain a hyphen (required for custom elements).
+    safeTagName() {
+        let slug = String(this.manifest.id || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9-]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        if (!slug) {
+            slug = 'graphic';
+        }
+        // Always prefix so the tag contains a hyphen and never starts with a digit/hyphen.
+        return `ograf-${slug}`;
+    }
+
+    // Build a class identifier that is always a valid JS identifier.
+    // PascalCase from the slug, prefixed so it always starts with a letter.
+    safeClassName() {
+        const pascal = String(this.manifest.id || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join('');
+        // Prefix guarantees a leading letter even when pascal is empty or starts with a digit.
+        return `OGraf${pascal}Graphic`;
+    }
+
     generateWebComponent() {
         // Generate the element styles at template generation time
         const elementStyles = this.generateElementStyles();
-        
+
         // Serialize elements data and animation settings for the component
         const elementsData = JSON.stringify(this.elements);
         const animationSettingsData = JSON.stringify(this.animationSettings || {});
-        
+
+        const className = this.safeClassName();
+
         const componentCode = `
-class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
+export default class ${className} extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
         this.data = {};
         this.isVisible = false;
+        this.currentStep = 0;
         this.elements = ${elementsData};
         this.animationSettings = ${animationSettingsData};
         this.elementStyles = \`${elementStyles}\`;
     }
 
-    connectedCallback() {
-        this.render();
-    }
-
-    async load() {
+    // OGraf lifecycle: load applies the initial data and renders the graphic.
+    async load(params = {}) {
+        const { data } = params;
+        if (data) {
+            this.data = { ...this.data, ...data };
+        }
         this.isVisible = false;
         this.render();
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async dispose() {
+    async dispose(params = {}) {
         this.isVisible = false;
+        this.currentStep = 0;
         this.shadowRoot.innerHTML = '';
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async playAction(skipAnimation = false) {
+    async playAction(params = {}) {
+        const { skipAnimation } = params;
         this.isVisible = true;
+        this.currentStep = 1;
         this.render();
-        
+
         if (!skipAnimation) {
             // Wait for render to complete before starting animation
             await new Promise(resolve => requestAnimationFrame(resolve));
-            // Trigger slide-in animation for lower third
-            await this.customAction('slideIn');
+            await this.animateSlideIn();
         }
-        
-        return Promise.resolve();
+
+        return { statusCode: 200, currentStep: this.currentStep };
     }
 
-    async stopAction(skipAnimation = false) {
+    async stopAction(params = {}) {
+        const { skipAnimation } = params;
         if (!skipAnimation) {
             // Trigger slide-out animation before hiding
-            await this.customAction('slideOut');
+            await this.animateSlideOut();
         }
-        
+
         this.isVisible = false;
-        
+        this.currentStep = 0;
+
         // Completely clear the shadow DOM - back to empty state
         this.shadowRoot.innerHTML = '';
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async updateAction(data) {
-        this.data = { ...this.data, ...data };
+    async updateAction(params = {}) {
+        const { data } = params;
+        if (data) {
+            this.data = { ...this.data, ...data };
+        }
         this.render();
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async customAction(action, data) {
-        switch (action) {
+    async customAction(params = {}) {
+        const { id } = params;
+        switch (id) {
             case 'slideIn':
-                return this.animateSlideIn();
+                await this.animateSlideIn();
+                return { statusCode: 200 };
             case 'slideOut':
-                return this.animateSlideOut();
+                await this.animateSlideOut();
+                return { statusCode: 200 };
             default:
-                return Promise.resolve();
+                return { statusCode: 200 };
         }
     }
-    
+
     animateSlideIn() {
         return new Promise((resolve) => {
             const settings = this.animationSettings || {
@@ -575,9 +631,7 @@ class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
         return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
     }
 }
-
-customElements.define('${this.manifest.id}-graphic', ${this.toCamelCase(this.manifest.id)}Graphic);
-        `;
+`;
 
         this.webComponent = componentCode.trim();
         return this.webComponent;
