@@ -519,6 +519,41 @@
     margin-top: 4px;
 }
 
+/* Collapsible property sections */
+.property-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin: 0 0 8px 0;
+    padding: 4px 0;
+    background: none;
+    border: none;
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.property-section-header:hover {
+    color: #ffffff;
+}
+
+.property-section-header .section-caret {
+    font-size: 0.7rem;
+    color: #909090;
+    transition: transform 0.15s ease;
+}
+
+.property-section.collapsed .section-caret {
+    transform: rotate(-90deg);
+}
+
+.property-section.collapsible.collapsed > :not(.property-section-header) {
+    display: none;
+}
+
 /* Data Inputs editor */
 .data-input-list {
     display: flex;

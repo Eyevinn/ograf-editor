@@ -97,8 +97,8 @@ export class PropertyPanel {
         const animationSettings = template.animationSettings;
 
         container.innerHTML = `
-            <div class="property-section">
-                <h4>Template Properties</h4>
+            <div class="property-section collapsible" data-section="template">
+                <button type="button" class="property-section-header" aria-expanded="true"><span class="section-caret" aria-hidden="true">&#9662;</span>Template Properties</button>
                 <p class="section-description">Configure the overall template settings and metadata.</p>
                 
                 <div class="property-group">
@@ -114,8 +114,8 @@ export class PropertyPanel {
                 </div>
             </div>
 
-            <div class="property-section">
-                <h4>Animation Settings</h4>
+            <div class="property-section collapsible" data-section="animation">
+                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Animation Settings</button>
                 <p class="section-description">Configure how graphics animate when playing and stopping.</p>
                 
                 <div class="property-group">
@@ -175,6 +175,39 @@ export class PropertyPanel {
         this.setupAnimationEventListeners();
         this.setupDataInputEventListeners();
         this.restoreDataInputFocus();
+        this.setupCollapsibleSections(container);
+    }
+
+    // Make the template-level sections collapsible so the narrow sidebar is not
+    // crowded by Template Properties, Animation Settings, and Data Inputs all at
+    // once. Collapsing hides the body via CSS (it stays in the DOM), so the data
+    // input listeners and focus restoration keep working. State persists on the
+    // instance across the panel's wholesale re-renders. Animation Settings starts
+    // collapsed since it is the least frequently touched and the tallest.
+    setupCollapsibleSections(container) {
+        if (!this.collapsedSections) {
+            this.collapsedSections = new Set(['animation']);
+        }
+        const sections = container.querySelectorAll('.property-section.collapsible');
+        sections.forEach(section => {
+            const key = section.dataset.section;
+            const header = section.querySelector('.property-section-header');
+            const collapsed = this.collapsedSections.has(key);
+            section.classList.toggle('collapsed', collapsed);
+            if (header) {
+                header.setAttribute('aria-expanded', String(!collapsed));
+                header.addEventListener('click', () => {
+                    const nowCollapsed = !this.collapsedSections.has(key);
+                    if (nowCollapsed) {
+                        this.collapsedSections.add(key);
+                    } else {
+                        this.collapsedSections.delete(key);
+                    }
+                    section.classList.toggle('collapsed', nowCollapsed);
+                    header.setAttribute('aria-expanded', String(!nowCollapsed));
+                });
+            }
+        });
     }
 
     // Build the "Data Inputs" section. Operators fill these in when running the
@@ -197,9 +230,9 @@ export class PropertyPanel {
         }
 
         return `
-            <div class="property-section">
+            <div class="property-section collapsible" data-section="datainputs">
+                <button type="button" class="property-section-header" aria-expanded="true"><span class="section-caret" aria-hidden="true">&#9662;</span>Data Inputs</button>
                 <div class="data-input-group" role="group" aria-label="Data Inputs">
-                    <h4>Data Inputs</h4>
                     <p class="section-description">Define the variables an operator can fill in when running this template. Each one becomes a {{token}} you place in text elements.</p>
 
                     <div class="data-input-list">
