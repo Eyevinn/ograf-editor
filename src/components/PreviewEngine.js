@@ -83,7 +83,6 @@ export class PreviewEngine {
         // Preview control buttons
         const playBtn = this.container.querySelector('#play-preview');
         const stopBtn = this.container.querySelector('#stop-preview');
-        const updateBtn = this.container.querySelector('#update-preview');
 
         if (playBtn) {
             playBtn.addEventListener('click', () => this.play());
@@ -92,10 +91,9 @@ export class PreviewEngine {
         if (stopBtn) {
             stopBtn.addEventListener('click', () => this.stop());
         }
-
-        if (updateBtn) {
-            updateBtn.addEventListener('click', () => this.update());
-        }
+        // No manual Update button: data-input edits update the preview live
+        // (see renderDataInputs), and element edits update it via the
+        // elementUpdated event.
     }
 
     render() {

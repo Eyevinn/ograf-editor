@@ -967,8 +967,11 @@ export class PropertyPanel {
             template.animationSettings = {};
         }
 
-        // Update the specific animation property
-        template.animationSettings[property] = value;
+        // Update the specific animation property. Number inputs deliver strings,
+        // so coerce duration fields to numbers (the generated component and the
+        // manifest actionDurations expect numeric ms).
+        const isDuration = property === 'slideInDuration' || property === 'slideOutDuration';
+        template.animationSettings[property] = isDuration ? Number(value) : value;
         
         // Save changes
         this.templateManager.saveToStorage();

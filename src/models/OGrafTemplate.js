@@ -612,7 +612,11 @@ export default class ${className} extends HTMLElement {
             // Default per field so an empty or partial settings object still
             // produces valid CSS (an empty object is truthy, so a single
             // object-level fallback would not catch it).
-            const duration = Number.isFinite(settings.slideInDuration) ? settings.slideInDuration : 500;
+            // Coerce to a number: settings may arrive as strings (e.g. "1500"
+            // from a number input), and Number.isFinite('1500') is false, so the
+            // duration was silently falling back to 500 and edits had no effect.
+            const slideInDurationNum = Number(settings.slideInDuration);
+            const duration = Number.isFinite(slideInDurationNum) && slideInDurationNum >= 0 ? slideInDurationNum : 500;
             const timing = settings.slideInType || 'ease-out';
             const direction = settings.slideInDirection || 'left';
 
@@ -652,7 +656,8 @@ export default class ${className} extends HTMLElement {
                 return;
             }
 
-            const duration = Number.isFinite(settings.slideOutDuration) ? settings.slideOutDuration : 500;
+            const slideOutDurationNum = Number(settings.slideOutDuration);
+            const duration = Number.isFinite(slideOutDurationNum) && slideOutDurationNum >= 0 ? slideOutDurationNum : 500;
             const timing = settings.slideOutType || 'ease-in';
             const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
 

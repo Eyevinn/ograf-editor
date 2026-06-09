@@ -142,4 +142,39 @@ describe('OGraf slide-in animation produces valid CSS (regression: undefinedms)'
 
     document.body.removeChild(el);
   });
+
+  it('(c) string duration "1500" is applied, not silently defaulted to 500', async () => {
+    vi.useFakeTimers();
+
+    // The reported bug: editing the duration in the Property Panel stored it as
+    // a string ("1500"), and Number.isFinite('1500') is false, so the animation
+    // silently fell back to 500ms and edits had no visible effect. The component
+    // must coerce the value to a number.
+    const template = OGrafTemplate.createFromType(
+      'lower-third',
+      'Anim String Duration',
+      'Anim String Duration',
+      'string duration'
+    );
+    template.animationSettings = { ...template.animationSettings, slideInDuration: '1500' };
+
+    const el = await instantiate(template);
+    await el.load({ data: { name: 'A', title: 'B' }, renderType: 'realtime', renderCharacteristics: {} });
+
+    const playPromise = el.playAction({});
+    await vi.advanceTimersByTimeAsync(1600);
+    const p = await playPromise;
+    expect(p.statusCode).toBe(200);
+
+    const elements = el.shadowRoot.querySelectorAll('.element');
+    expect(elements.length).toBeGreaterThan(0);
+    elements.forEach((node) => {
+      const t = node.style.transition;
+      // 1500ms must be applied (not silently defaulted). Match on a word
+      // boundary so this is not satisfied by the "500ms" substring of "1500ms".
+      expect(t).toMatch(/\b1500ms\b/);
+    });
+
+    document.body.removeChild(el);
+  });
 });
