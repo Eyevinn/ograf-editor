@@ -5,7 +5,12 @@ export class PropertyPanel {
         this.templateManager = templateManager;
         this.previewEngine = null;
         this.currentElement = null;
-        
+        // Stash of which data-input control should regain focus after the panel
+        // re-renders via innerHTML (which destroys the old element refs).
+        // Shape: { key, field } where field is 'key' | 'label' | 'type' |
+        // 'default' | 'remove', or { add: true } to target the Add button.
+        this.dataInputFocusTarget = null;
+
         this.init();
     }
 
@@ -163,9 +168,116 @@ export class PropertyPanel {
                 </div>
 
             </div>
+
+            ${this.renderDataInputsSection(template)}
         `;
 
         this.setupAnimationEventListeners();
+        this.setupDataInputEventListeners();
+        this.restoreDataInputFocus();
+    }
+
+    // Build the "Data Inputs" section. Operators fill these in when running the
+    // template; each key becomes a {{token}} placed in text element content.
+    // manifest.schema.properties is a keyed object {key: {type, title, default}}
+    // and key order is meaningful, so we iterate Object.keys in order.
+    renderDataInputsSection(template) {
+        const properties = template.manifest.schema.properties || {};
+        const keys = Object.keys(properties);
+
+        let rowsHtml;
+        if (keys.length === 0) {
+            rowsHtml = `
+                <p class="data-input-empty">No data inputs yet. Add one so operators can change this graphic without editing code.</p>
+            `;
+        } else {
+            rowsHtml = keys
+                .map(key => this.renderDataInputRow(template, key, properties[key]))
+                .join('');
+        }
+
+        return `
+            <div class="property-section">
+                <div class="data-input-group" role="group" aria-label="Data Inputs">
+                    <h4>Data Inputs</h4>
+                    <p class="section-description">Define the variables an operator can fill in when running this template. Each one becomes a {{token}} you place in text elements.</p>
+
+                    <div class="data-input-list">
+                        ${rowsHtml}
+                    </div>
+
+                    <button type="button" class="btn-add-data-input" data-add-data-input>Add data input</button>
+                </div>
+            </div>
+        `;
+    }
+
+    renderDataInputRow(template, key, prop) {
+        const type = prop.type || 'string';
+        const title = prop.title || '';
+        const defaultValue = prop.default;
+
+        const safeKey = this.escapeHtml(key);
+        const safeTitle = this.escapeHtml(title);
+
+        // id namespace is per key + field so every label/control pair is unique.
+        const idBase = `data-input-${this.escapeAttr(key)}`;
+
+        // Default-value control follows the type.
+        let defaultControl;
+        if (type === 'number') {
+            const numVal = (defaultValue === '' || defaultValue === undefined || defaultValue === null)
+                ? ''
+                : this.escapeAttr(String(defaultValue));
+            defaultControl = `<input type="number" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${numVal}">`;
+        } else if (type === 'boolean') {
+            const checked = defaultValue === true ? 'checked' : '';
+            defaultControl = `
+                <label class="data-input-checkbox-label">
+                    <input type="checkbox" id="${idBase}-default" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" ${checked}>
+                    <span>Yes</span>
+                </label>
+            `;
+        } else {
+            const textVal = (defaultValue === undefined || defaultValue === null)
+                ? ''
+                : this.escapeAttr(String(defaultValue));
+            defaultControl = `<input type="text" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${textVal}">`;
+        }
+
+        const referencingCount = template.findElementsReferencingProperty(key).length;
+        const notUsedNote = referencingCount === 0
+            ? `<p class="data-input-note">Not used in any element yet.</p>`
+            : '';
+
+        return `
+            <div class="data-input-row" role="group" aria-label="Data input: ${safeKey}" data-data-input-row="${this.escapeAttr(key)}">
+                <p class="data-input-helper">Use {{${safeKey}}} in a text element</p>
+                <div class="property-group">
+                    <label for="${idBase}-key">Key</label>
+                    <input type="text" id="${idBase}-key" class="property-input data-input-key" data-data-input-field="key" data-data-input-key="${this.escapeAttr(key)}" value="${safeKey}" autocomplete="off" spellcheck="false">
+                    <p class="data-input-error" data-data-input-error="${this.escapeAttr(key)}" role="alert" hidden></p>
+                </div>
+                <div class="property-group">
+                    <label for="${idBase}-label">Label</label>
+                    <input type="text" id="${idBase}-label" class="property-input" data-data-input-field="label" data-data-input-key="${this.escapeAttr(key)}" value="${safeTitle}">
+                </div>
+                <div class="property-group">
+                    <label for="${idBase}-type">Type</label>
+                    <select id="${idBase}-type" class="property-input" data-data-input-field="type" data-data-input-key="${this.escapeAttr(key)}">
+                        <option value="string" ${type === 'string' ? 'selected' : ''}>Text</option>
+                        <option value="number" ${type === 'number' ? 'selected' : ''}>Number</option>
+                        <option value="boolean" ${type === 'boolean' ? 'selected' : ''}>Yes/No</option>
+                    </select>
+                </div>
+                <div class="property-group">
+                    <label for="${idBase}-default">Default value</label>
+                    ${defaultControl}
+                </div>
+                <button type="button" class="btn-remove-data-input" data-remove-data-input="${this.escapeAttr(key)}" aria-label="Remove data input ${safeKey}">Remove</button>
+                ${notUsedNote}
+            </div>
+        `;
     }
 
     renderElementProperties(container, element) {
@@ -256,6 +368,308 @@ export class PropertyPanel {
         }
     }
 
+    // Wire only the Data Inputs controls. Kept separate from the generic
+    // animation/template listeners so neither widens to catch the other's
+    // inputs (the data-input controls use their own data-* attributes).
+    setupDataInputEventListeners() {
+        const container = this.container;
+
+        // Label / Type / Default value commit on change. Text + number default
+        // also commit on input so the preview stays live as you type.
+        const fieldInputs = container.querySelectorAll('[data-data-input-field]');
+        fieldInputs.forEach(input => {
+            const field = input.dataset.dataInputField;
+            const key = input.dataset.dataInputKey;
+
+            if (field === 'key') {
+                // Key commits on change/blur only, never per keystroke, so a
+                // half-typed name is not treated as a rename. Clear any error
+                // while the user is editing.
+                input.addEventListener('input', () => {
+                    this.clearDataInputError(key);
+                    input.removeAttribute('aria-invalid');
+                });
+                const commitKey = () => this.commitDataInputKey(key, input);
+                input.addEventListener('change', commitKey);
+                input.addEventListener('blur', commitKey);
+                return;
+            }
+
+            if (field === 'default') {
+                input.addEventListener('change', (e) => {
+                    this.updateDataInputField(key, 'default', this.readDefaultValue(e.target));
+                });
+                // Live preview for free-text and number defaults.
+                if (input.type === 'text' || input.type === 'number') {
+                    input.addEventListener('input', (e) => {
+                        this.updateDataInputField(key, 'default', this.readDefaultValue(e.target));
+                    });
+                }
+                return;
+            }
+
+            if (field === 'label') {
+                input.addEventListener('change', (e) => {
+                    this.updateDataInputField(key, 'label', e.target.value);
+                });
+                input.addEventListener('input', (e) => {
+                    this.updateDataInputField(key, 'label', e.target.value);
+                });
+                return;
+            }
+
+            if (field === 'type') {
+                input.addEventListener('change', (e) => {
+                    this.updateDataInputField(key, 'type', e.target.value);
+                });
+            }
+        });
+
+        // Remove buttons.
+        const removeBtns = container.querySelectorAll('[data-remove-data-input]');
+        removeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.removeDataInput(btn.dataset.removeDataInput);
+            });
+        });
+
+        // Add button.
+        const addBtn = container.querySelector('[data-add-data-input]');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => this.addDataInput());
+        }
+    }
+
+    // Read a default-value control into a stored value. number coerces via
+    // Number() (empty stays ''), boolean stores a real true/false, text stays
+    // a string.
+    readDefaultValue(target) {
+        if (target.type === 'checkbox') {
+            return target.checked;
+        }
+        if (target.type === 'number') {
+            if (target.value === '') return '';
+            const num = Number(target.value);
+            return Number.isNaN(num) ? '' : num;
+        }
+        return target.value;
+    }
+
+    // The panel re-renders via innerHTML, so element refs die. We stash a focus
+    // target before re-render and reapply it here so keyboard focus survives
+    // add / remove / rename.
+    restoreDataInputFocus() {
+        const target = this.dataInputFocusTarget;
+        this.dataInputFocusTarget = null;
+        if (!target) return;
+
+        let el = null;
+        if (target.add) {
+            el = this.container.querySelector('[data-add-data-input]');
+        } else if (target.field === 'remove') {
+            el = this.container.querySelector(`[data-remove-data-input="${CSS.escape(target.key)}"]`);
+        } else {
+            const idBase = `data-input-${target.key}`;
+            el = this.container.querySelector(`#${CSS.escape(idBase)}-${target.field}`);
+        }
+
+        if (el) {
+            el.focus();
+            if (target.field === 'key' && typeof el.select === 'function') {
+                el.select();
+            }
+        }
+    }
+
+    addDataInput() {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        // First non-colliding fieldN key.
+        const properties = template.manifest.schema.properties || {};
+        let index = 1;
+        let key = `field${index}`;
+        while (key in properties) {
+            index += 1;
+            key = `field${index}`;
+        }
+
+        template.addProperty(key, 'string', '', '');
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+
+        // Focus + select the new row's Key input after re-render.
+        this.dataInputFocusTarget = { key, field: 'key' };
+        this.render();
+    }
+
+    commitDataInputKey(oldKey, input) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        const newKey = input.value;
+
+        // No change: nothing to do.
+        if (newKey === oldKey) {
+            this.clearDataInputError(oldKey);
+            return;
+        }
+
+        // Pattern must match the \w interpolation regex and not start with a digit.
+        const pattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+        if (!pattern.test(newKey)) {
+            this.showDataInputError(oldKey, input, 'Use letters, numbers and underscore. Cannot start with a number.');
+            return;
+        }
+
+        // Unique, case-sensitive.
+        if (newKey in (template.manifest.schema.properties || {})) {
+            this.showDataInputError(oldKey, input, 'That name is already used. Pick a different one.');
+            return;
+        }
+
+        // If the old key is referenced, ask before renaming so references are
+        // never silently broken.
+        const referencing = template.findElementsReferencingProperty(oldKey);
+        if (referencing.length > 0) {
+            const update = confirm(
+                `${oldKey} is used in ${referencing.length} element(s). Update those references to ${newKey} too?\n\nOK: update references. Cancel: leave them.`
+            );
+            if (update) {
+                const oldToken = `{{${oldKey}}}`;
+                const newToken = `{{${newKey}}}`;
+                referencing.forEach(el => {
+                    el.content = el.content.split(oldToken).join(newToken);
+                });
+            }
+        }
+
+        template.renameProperty(oldKey, newKey);
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        this.visualEditor.render();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+
+        // Keep focus on the (now renamed) Key input.
+        this.dataInputFocusTarget = { key: newKey, field: 'key' };
+        this.render();
+    }
+
+    updateDataInputField(key, field, value) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+        const prop = template.manifest.schema.properties[key];
+        if (!prop) return;
+
+        if (field === 'label') {
+            prop.title = value;
+        } else if (field === 'default') {
+            prop.default = value;
+        } else if (field === 'type') {
+            prop.type = value;
+            // Re-coerce the stored default to the new type so we never keep a
+            // value the control can no longer represent.
+            if (value === 'number') {
+                const num = Number(prop.default);
+                prop.default = (prop.default === '' || Number.isNaN(num)) ? '' : num;
+            } else if (value === 'boolean') {
+                prop.default = prop.default === true;
+            } else {
+                prop.default = (prop.default === undefined || prop.default === null)
+                    ? ''
+                    : String(prop.default);
+            }
+        }
+
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        this.visualEditor.render();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+
+        // Changing the type swaps the default-value control, so re-render and
+        // keep focus on the Type select.
+        if (field === 'type') {
+            this.dataInputFocusTarget = { key, field: 'type' };
+            this.render();
+        }
+    }
+
+    removeDataInput(key) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        const referencing = template.findElementsReferencingProperty(key);
+        if (referencing.length > 0) {
+            const ok = confirm(
+                `${key} is used in ${referencing.length} element(s). Removing it will leave {{${key}}} showing as raw text on air. Remove anyway?`
+            );
+            if (!ok) return;
+        }
+
+        // Work out the previous row's key so focus lands somewhere sensible.
+        const keys = Object.keys(template.manifest.schema.properties || {});
+        const removedIndex = keys.indexOf(key);
+        const previousKey = removedIndex > 0 ? keys[removedIndex - 1] : null;
+
+        template.removeProperty(key);
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        this.visualEditor.render();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+
+        // Focus the previous row's Key input, or the Add button if none remain.
+        this.dataInputFocusTarget = previousKey
+            ? { key: previousKey, field: 'key' }
+            : { add: true };
+        this.render();
+    }
+
+    showDataInputError(key, input, message) {
+        input.setAttribute('aria-invalid', 'true');
+        const errorEl = this.container.querySelector(`[data-data-input-error="${CSS.escape(key)}"]`);
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.hidden = false;
+        }
+        // Keep focus on the offending input; do not write.
+        input.focus();
+        if (typeof input.select === 'function') {
+            input.select();
+        }
+    }
+
+    clearDataInputError(key) {
+        const errorEl = this.container.querySelector(`[data-data-input-error="${CSS.escape(key)}"]`);
+        if (errorEl) {
+            errorEl.textContent = '';
+            errorEl.hidden = true;
+        }
+    }
+
+    escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    escapeAttr(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;');
+    }
+
     renderContentProperties(element) {
         if (element.type === 'text' || element.type === 'image') {
             const label = element.type === 'text' ? 'Text Content' : 'Image URL';
@@ -264,14 +678,55 @@ export class PropertyPanel {
                 `<textarea class="property-input" data-property="content" rows="3">${element.content || ''}</textarea>` :
                 `<input type="url" class="property-input" data-property="content" value="${element.content || ''}" placeholder="Enter image URL">`;
 
+            const insertControl = element.type === 'text'
+                ? this.renderInsertDataInputControl()
+                : '';
+
             return `
                 <div class="property-group">
                     <label>${label}</label>
                     ${inputElement}
                 </div>
+                ${insertControl}
             `;
         }
         return '';
+    }
+
+    // The canvas link: lets the designer drop a {{token}} into the selected text
+    // element from the schema, without typing the braces. Append-to-end is the
+    // v1 behaviour (cursor-position insertion is deferred).
+    renderInsertDataInputControl() {
+        const template = this.templateManager.getCurrentTemplate();
+        const properties = (template && template.manifest.schema.properties) || {};
+        const keys = Object.keys(properties);
+
+        if (keys.length === 0) {
+            return `
+                <div class="property-group">
+                    <p class="help-text">No data inputs yet. Add one in the template properties (deselect this element).</p>
+                </div>
+            `;
+        }
+
+        const options = keys
+            .map(key => {
+                const label = properties[key].title || key;
+                return `<option value="${this.escapeAttr(key)}">${this.escapeHtml(label)} ({{${this.escapeHtml(key)}}})</option>`;
+            })
+            .join('');
+
+        return `
+            <div class="property-group">
+                <label for="insert-data-input-select">Insert data input</label>
+                <div class="insert-data-input-row">
+                    <select id="insert-data-input-select" class="property-input" data-insert-data-input-select>
+                        ${options}
+                    </select>
+                    <button type="button" class="btn-insert-data-input" data-insert-data-input>Insert</button>
+                </div>
+            </div>
+        `;
     }
 
     renderStyleProperties(element) {
@@ -417,6 +872,29 @@ export class PropertyPanel {
                 });
             }
         });
+
+        // Insert data input: append {{key}} to the selected text element's
+        // content through the same path the content textarea uses.
+        const insertBtn = container.querySelector('[data-insert-data-input]');
+        if (insertBtn) {
+            insertBtn.addEventListener('click', () => {
+                const select = container.querySelector('[data-insert-data-input-select]');
+                if (!select || !select.value) return;
+                this.insertDataInputToken(select.value);
+            });
+        }
+    }
+
+    insertDataInputToken(key) {
+        if (!this.currentElement) return;
+        const template = this.templateManager.getCurrentTemplate();
+        const element = template && template.getElementById(this.currentElement);
+        if (!element) return;
+
+        const existing = element.content || '';
+        const updated = `${existing}{{${key}}}`;
+        this.visualEditor.updateSelectedElement({ content: updated });
+        this.render();
     }
 
     updateElementProperty(property, value) {
@@ -535,22 +1013,5 @@ export class PropertyPanel {
         };
         
         return namedColors[color.toLowerCase()] || null;
-    }
-
-    addCustomProperty() {
-        const template = this.templateManager.getCurrentTemplate();
-        if (!template) return;
-
-        const propertyName = prompt('Enter property name:');
-        if (!propertyName) return;
-
-        const propertyType = prompt('Enter property type (string, number, boolean):') || 'string';
-        const defaultValue = prompt('Enter default value:') || '';
-
-        template.addProperty(propertyName, propertyType, propertyName, defaultValue);
-        this.templateManager.saveToStorage();
-        
-        // Refresh template properties panel
-        this.renderTemplateProperties(this.container);
     }
 }

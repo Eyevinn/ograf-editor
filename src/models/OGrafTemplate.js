@@ -328,6 +328,40 @@ export class OGrafTemplate {
         delete this.manifest.schema.properties[name];
     }
 
+    // Rename a schema property key while preserving the key order.
+    // A naive delete + re-add would move the key to the end, which would
+    // reorder the operator's data-input list on every rename. We rebuild the
+    // properties object, swapping the single key in place. No-op if oldKey is
+    // missing or newKey already exists (and differs from oldKey).
+    renameProperty(oldKey, newKey) {
+        const properties = this.manifest.schema.properties;
+        if (!(oldKey in properties)) return false;
+        if (oldKey === newKey) return false;
+        if (newKey in properties) return false;
+
+        const rebuilt = {};
+        for (const key of Object.keys(properties)) {
+            if (key === oldKey) {
+                rebuilt[newKey] = properties[oldKey];
+            } else {
+                rebuilt[key] = properties[key];
+            }
+        }
+        this.manifest.schema.properties = rebuilt;
+        return true;
+    }
+
+    // Find elements whose content references {{key}}. The token form must match
+    // the interpolation regex (\{\{(\w+)\}\}) used by the generated component,
+    // so we match the exact {{key}} substring. Used for "not used" cues and
+    // rename/remove reference warnings.
+    findElementsReferencingProperty(key) {
+        const token = `{{${key}}}`;
+        return this.elements.filter(
+            el => typeof el.content === 'string' && el.content.includes(token)
+        );
+    }
+
     addElement(element) {
         this.elements.push({
             id: `element_${Date.now()}`,
