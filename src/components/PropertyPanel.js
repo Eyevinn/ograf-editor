@@ -1,3 +1,5 @@
+import { escapeHtml } from '../utils/escapeHtml.js';
+
 export class PropertyPanel {
     constructor(containerElement, visualEditor, templateManager) {
         this.container = containerElement;
@@ -103,13 +105,13 @@ export class PropertyPanel {
                 
                 <div class="property-group">
                     <label>Template Name</label>
-                    <input type="text" class="property-input" data-template-property="name" value="${template.manifest.name}">
+                    <input type="text" class="property-input" data-template-property="name" value="${escapeHtml(template.manifest.name)}">
                     <small class="help-text">The display name for this graphics template</small>
                 </div>
 
                 <div class="property-group">
                     <label>Description</label>
-                    <textarea class="property-input" data-template-property="description" rows="2">${template.manifest.description || ''}</textarea>
+                    <textarea class="property-input" data-template-property="description" rows="2">${escapeHtml(template.manifest.description || '')}</textarea>
                     <small class="help-text">Optional description of what this template does</small>
                 </div>
             </div>
@@ -325,7 +327,7 @@ export class PropertyPanel {
                 
                 <div class="property-group">
                     <label>Element ID</label>
-                    <input type="text" class="property-input" data-property="id" value="${element.id}" readonly>
+                    <input type="text" class="property-input" data-property="id" value="${escapeHtml(element.id)}" readonly>
                 </div>
 
                 <div class="property-group">
@@ -712,9 +714,10 @@ export class PropertyPanel {
         if (element.type === 'text' || element.type === 'image') {
             const label = element.type === 'text' ? 'Text Content' : 'Image URL';
             const inputType = element.type === 'text' ? 'textarea' : 'input';
-            const inputElement = element.type === 'text' ? 
-                `<textarea class="property-input" data-property="content" rows="3">${element.content || ''}</textarea>` :
-                `<input type="url" class="property-input" data-property="content" value="${element.content || ''}" placeholder="Enter image URL">`;
+            const safeContent = escapeHtml(element.content || '');
+            const inputElement = element.type === 'text' ?
+                `<textarea class="property-input" data-property="content" rows="3">${safeContent}</textarea>` :
+                `<input type="url" class="property-input" data-property="content" value="${safeContent}" placeholder="Enter image URL">`;
 
             const insertControl = element.type === 'text'
                 ? this.renderInsertDataInputControl()
@@ -776,11 +779,11 @@ export class PropertyPanel {
             styleHtml += `
                 <div class="style-property">
                     <label class="input-label">Font Size</label>
-                    <input type="text" class="property-input" data-style-property="fontSize" value="${style.fontSize || '20px'}">
+                    <input type="text" class="property-input" data-style-property="fontSize" value="${escapeHtml(style.fontSize || '20px')}">
                 </div>
                 <div class="style-property">
                     <label class="input-label">Font Family</label>
-                    <input type="text" class="property-input" data-style-property="fontFamily" value="${style.fontFamily || 'Arial, sans-serif'}">
+                    <input type="text" class="property-input" data-style-property="fontFamily" value="${escapeHtml(style.fontFamily || 'Arial, sans-serif')}">
                 </div>
                 <div class="style-property">
                     <label class="input-label">Font Weight</label>
@@ -802,7 +805,7 @@ export class PropertyPanel {
                     <label class="input-label">Color</label>
                     <div class="color-input-group">
                         <input type="color" class="color-picker" data-style-property="color" value="${this.colorToHex(style.color) || '#ffffff'}">
-                        <input type="text" class="property-input color-text" data-style-property="color" value="${style.color || '#ffffff'}">
+                        <input type="text" class="property-input color-text" data-style-property="color" value="${escapeHtml(style.color || '#ffffff')}">
                     </div>
                 </div>
             `;
@@ -828,21 +831,21 @@ export class PropertyPanel {
                 <label class="input-label">Background Color</label>
                 <div class="color-input-group">
                     <input type="color" class="color-picker" data-style-property="backgroundColor" value="${this.colorToHex(style.backgroundColor) || '#000000'}">
-                    <input type="text" class="property-input color-text" data-style-property="backgroundColor" value="${style.backgroundColor || 'transparent'}">
+                    <input type="text" class="property-input color-text" data-style-property="backgroundColor" value="${escapeHtml(style.backgroundColor || 'transparent')}">
                 </div>
             </div>
             <div class="style-property">
                 <label class="input-label">Border</label>
-                <input type="text" class="property-input" data-style-property="border" value="${style.border || 'none'}" placeholder="e.g., 2px solid #ffffff">
+                <input type="text" class="property-input" data-style-property="border" value="${escapeHtml(style.border || 'none')}" placeholder="e.g., 2px solid #ffffff">
             </div>
             <div class="style-property">
                 <label class="input-label">Border Radius</label>
-                <input type="text" class="property-input" data-style-property="borderRadius" value="${style.borderRadius || '0px'}" placeholder="e.g., 4px">
+                <input type="text" class="property-input" data-style-property="borderRadius" value="${escapeHtml(style.borderRadius || '0px')}" placeholder="e.g., 4px">
             </div>
             <div class="style-property">
                 <label class="input-label">Opacity</label>
-                <input type="range" class="property-input range-input" data-style-property="opacity" min="0" max="1" step="0.1" value="${style.opacity || '1'}">
-                <span class="range-value">${style.opacity || '1'}</span>
+                <input type="range" class="property-input range-input" data-style-property="opacity" min="0" max="1" step="0.1" value="${escapeHtml(style.opacity || '1')}">
+                <span class="range-value">${escapeHtml(style.opacity || '1')}</span>
             </div>
         `;
 

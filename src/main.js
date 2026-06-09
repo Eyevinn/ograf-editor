@@ -4,6 +4,7 @@ import { VisualEditor } from './components/VisualEditor.js';
 import { PropertyPanel } from './components/PropertyPanel.js';
 import { PreviewEngine } from './components/PreviewEngine.js';
 import { CodeEditor } from './components/CodeEditor.js';
+import { escapeHtml } from './utils/escapeHtml.js';
 
 class OGrafEditor {
     constructor() {
@@ -270,15 +271,20 @@ class OGrafEditor {
         } else {
             const templateItems = templates.map(template => {
                 const isActive = currentTemplate && currentTemplate.manifest.id === template.manifest.id;
+                // manifest fields can come from an imported file, so escape every
+                // one before it lands in this innerHTML (both attribute and text).
+                const safeId = escapeHtml(template.manifest.id);
+                const safeName = escapeHtml(template.manifest.name);
+                const safeDescription = escapeHtml(template.manifest.description || 'No description');
                 return `
-                    <div class="template-item ${isActive ? 'active' : ''}" data-template-id="${template.manifest.id}">
+                    <div class="template-item ${isActive ? 'active' : ''}" data-template-id="${safeId}">
                         <div class="template-item-actions">
                             <button class="template-action-btn delete-btn" title="Delete">🗑️</button>
                         </div>
-                        <h4>${template.manifest.name}</h4>
-                        <p>${template.manifest.description || 'No description'}</p>
+                        <h4>${safeName}</h4>
+                        <p>${safeDescription}</p>
                         <div class="template-meta">
-                            ID: ${template.manifest.id} | Elements: ${template.elements?.length || 0}
+                            ID: ${safeId} | Elements: ${template.elements?.length || 0}
                         </div>
                     </div>
                 `;

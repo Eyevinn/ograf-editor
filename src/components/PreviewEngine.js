@@ -167,30 +167,37 @@ export class PreviewEngine {
         });
 
 
-        const inputsHtml = Object.entries(schema.properties).map(([key, prop]) => {
+        // Build inputs via the DOM API rather than an innerHTML template string.
+        // Operator-typed previewData and manifest title/default are untrusted text;
+        // setting .textContent / .value / .placeholder / .dataset as properties
+        // removes the attribute-injection vector an innerHTML template would allow.
+        dataInputsContainer.innerHTML = '';
+
+        Object.entries(schema.properties).forEach(([key, prop]) => {
             const currentValue = this.previewData[key] || prop.default || '';
-            return `
-                <div class="data-input-group">
-                    <label>${prop.title || key}:</label>
-                    <input 
-                        type="text" 
-                        class="data-input" 
-                        data-property="${key}" 
-                        value="${currentValue}"
-                        placeholder="${prop.default || ''}"
-                    >
-                </div>
-            `;
-        }).join('');
 
-        dataInputsContainer.innerHTML = inputsHtml;
+            const group = document.createElement('div');
+            group.className = 'data-input-group';
 
-        // Setup event listeners for data inputs
-        dataInputsContainer.querySelectorAll('.data-input').forEach(input => {
+            const label = document.createElement('label');
+            label.textContent = `${prop.title || key}:`;
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'data-input';
+            input.dataset.property = key;
+            input.value = currentValue;
+            input.placeholder = prop.default || '';
+
+            // Re-bind the change/input listener on the created input.
             input.addEventListener('input', (e) => {
                 this.previewData[e.target.dataset.property] = e.target.value;
                 this.updatePreviewData();
             });
+
+            group.appendChild(label);
+            group.appendChild(input);
+            dataInputsContainer.appendChild(group);
         });
     }
 
@@ -385,15 +392,32 @@ export class PreviewEngine {
         }
     }
 
+    // Escape text before it is placed into innerHTML. An error's message/stack
+    // can contain data-derived content (e.g. an interpolated value that broke a
+    // generated module), so it is untrusted.
+    escapeHtml(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;');
+    }
+
     showWebComponentError(message, error) {
+        const safeMessage = this.escapeHtml(error?.message || 'Unknown error');
+        const safeStack = error?.stack ? `<pre>${this.escapeHtml(error.stack)}</pre>` : '';
         this.scaledContainer.innerHTML = `
             <div class="web-component-error">
                 <h3>⚠️ Web Component Error</h3>
-                <p>${message}</p>
+                <p>${this.escapeHtml(message)}</p>
                 <details>
                     <summary>Error Details</summary>
-                    <pre>${error?.message || 'Unknown error'}</pre>
-                    ${error?.stack ? `<pre>${error.stack}</pre>` : ''}
+                    <pre>${safeMessage}</pre>
+                    ${safeStack}
                 </details>
                 <p>Please check your template code generation or try regenerating the template.</p>
             </div>

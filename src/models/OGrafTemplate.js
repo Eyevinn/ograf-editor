@@ -37,6 +37,16 @@ export class OGrafTemplate {
 
     // Turn arbitrary user input into a safe OGraf id: lowercase, hyphen-separated,
     // only [a-z0-9-]. e.g. "My Lower Third" -> "my-lower-third".
+    static get MANIFEST_ALLOWED_KEYS() {
+        return [
+            // Required.
+            '$schema', 'id', 'name', 'main', 'supportsRealTime', 'supportsNonRealTime',
+            // Optional.
+            'version', 'description', 'author', 'schema', 'customActions',
+            'actionDurations', 'stepCount', 'renderRequirements', 'thumbnails'
+        ];
+    }
+
     static slugifyId(rawId) {
         const slug = String(rawId || '')
             .toLowerCase()
@@ -384,11 +394,23 @@ export class OGrafTemplate {
         }
     }
 
+    // Reject CSS style values that could break out of a `key: value;` declaration
+    // inside the generated `<style>` block. A crafted value containing { } < > or
+    // a double quote could otherwise close the rule or the <style> element and
+    // inject markup. Legitimate values (colors, px, rgba(), Arial, sans-serif)
+    // contain none of these, so they pass through untouched.
+    static sanitizeCssValue(value) {
+        const str = String(value);
+        return /[{}<>"]/.test(str) ? '' : str;
+    }
+
     generateElementStyles() {
-        // Generate CSS styles for all elements
+        // Generate CSS styles for all elements. element.id is already slugified on
+        // import, and each value is checked so it cannot escape the declaration or
+        // the surrounding <style> element.
         return this.elements.map(element => {
             const styles = Object.entries(element.style || {})
-                .map(([key, value]) => `${this.kebabCase(key)}: ${value};`)
+                .map(([key, value]) => `${this.kebabCase(key)}: ${OGrafTemplate.sanitizeCssValue(value)};`)
                 .join(' ');
             return `.element-${element.id} { ${styles} }`;
         }).join('\n');
@@ -440,6 +462,32 @@ export class OGrafTemplate {
         const className = this.safeClassName();
 
         const componentCode = `
+// Escape data values before they are interpolated into shadow DOM innerHTML.
+// The template author's static markup is trusted; runtime data (operator/feed
+// input arriving via load()/updateAction()) is not, so it is escaped here.
+// Self-contained: no imports, lives in this generated module.
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+}
+
+// Only allow http(s) and data:image URLs for an image src; anything else
+// (e.g. javascript:) becomes a blank src, which is safer than a hostile one.
+function safeSrc(value) {
+    const s = escapeHtml(value);
+    if (/^https?:\\/\\//i.test(value) || /^data:image\\//i.test(value)) {
+        return s;
+    }
+    return '';
+}
+
 export default class ${className} extends HTMLElement {
     constructor() {
         super();
@@ -650,21 +698,29 @@ export default class ${className} extends HTMLElement {
     }
 
     renderElement(element) {
-        const content = this.interpolateContent(element.content || '');
         const baseStyles = \`left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;\`;
         
-        // Convert element.style object to CSS string
+        // Convert element.style object to CSS string. Escape each value for the
+        // double-quoted style="..." attribute context so an imported style value
+        // cannot close the attribute and inject markup. element.x/y/width/height
+        // are numbers set by the editor, so baseStyles needs no escaping.
         const additionalStyles = element.style ? Object.entries(element.style)
-            .map(([key, value]) => \`\${this.kebabCase(key)}: \${value};\`)
+            .map(([key, value]) => \`\${this.kebabCase(key)}: \${escapeHtml(value)};\`)
             .join(' ') : '';
         
         const allStyles = baseStyles + ' ' + additionalStyles;
         
         switch (element.type) {
-            case 'text':
+            case 'text': {
+                // Text context: escape the resolved data value.
+                const content = this.interpolateContent(element.content || '');
                 return \`<div class="element element-\${element.id}" style="\${allStyles}">\${content}</div>\`;
-            case 'image':
-                return \`<img class="element element-\${element.id}" src="\${content}" style="\${allStyles}" />\`;
+            }
+            case 'image': {
+                // src context: only allow http(s)/data:image URLs, else blank src.
+                const src = this.interpolateContent(element.content || '', 'src');
+                return \`<img class="element element-\${element.id}" src="\${src}" style="\${allStyles}" />\`;
+            }
             case 'rect':
             case 'rectangle':
                 return \`<div class="element element-\${element.id}" style="\${allStyles}"></div>\`;
@@ -676,10 +732,12 @@ export default class ${className} extends HTMLElement {
         }
     }
 
-    interpolateContent(content) {
+    interpolateContent(content, context = 'text') {
         const result = content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
+            // Keep the presence check so empty-string/0 still render, and an
+            // unresolved placeholder is left untouched (then escaped).
             const value = key in this.data ? this.data[key] : match;
-            return value;
+            return context === 'src' ? safeSrc(value) : escapeHtml(value);
         });
         return result;
     }
@@ -699,6 +757,28 @@ export default class ${className} extends HTMLElement {
                  .replace(/^[a-z]/, (g) => g.toUpperCase());
     }
 
+    // Build a portable, spec-clean OGraf v1 manifest object: only the top-level
+    // fields the schema allows (additionalProperties:false), plus any v_-prefixed
+    // vendor extensions. The editor's internal fields (elements, webComponent) and
+    // export-wrapper fields must never leak into the manifest written to disk.
+    // Allowed keys verified 2026-06-09 against the OGraf v1 graphics JSON schema
+    // (source: https://raw.githubusercontent.com/ebu/ograf/main/v1/specification/json-schemas/graphics/schema.json).
+    buildManifest() {
+        const clean = {};
+        for (const key of OGrafTemplate.MANIFEST_ALLOWED_KEYS) {
+            if (this.manifest[key] !== undefined) {
+                clean[key] = this.manifest[key];
+            }
+        }
+        // Pass through vendor extensions (patternProperties ^v_.*).
+        for (const [key, value] of Object.entries(this.manifest)) {
+            if (key.startsWith('v_') && value !== undefined) {
+                clean[key] = value;
+            }
+        }
+        return clean;
+    }
+
     toJSON() {
         return {
             manifest: this.manifest,
@@ -710,7 +790,16 @@ export default class ${className} extends HTMLElement {
     static fromJSON(json) {
         const template = new OGrafTemplate();
         template.manifest = json.manifest;
-        template.elements = json.elements;
+        // Sanitize each element id before assignment: it is interpolated into an
+        // `element-<id>` class attribute and the generateElementStyles `<style>`
+        // block, so a crafted id from an imported file (e.g. `" onmouseover=...`)
+        // could otherwise break out of that context.
+        template.elements = Array.isArray(json.elements)
+            ? json.elements.map(element => ({
+                ...element,
+                id: OGrafTemplate.slugifyId(element.id)
+            }))
+            : json.elements;
         template.webComponent = json.webComponent;
         return template;
     }
