@@ -333,7 +333,7 @@ class ${className} extends HTMLElement {
     }
 }
 
-customElements.define('${manifest.id}-graphic', ${className});
+customElements.define('${safeId}-graphic', ${className});
         `.trim();
     }
 

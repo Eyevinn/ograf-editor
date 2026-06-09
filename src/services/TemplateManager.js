@@ -155,7 +155,10 @@ export class TemplateManager {
         Object.entries(manifest.schema.properties).forEach(([key, prop], index) => {
             if (prop.type === 'string') {
                 elements.push({
-                    id: key,
+                    // Sanitize the schema key before using it as an element id:
+                    // it becomes a CSS class/selector segment, so a crafted key
+                    // could otherwise inject into the generated style block.
+                    id: OGrafTemplate.slugifyId(key),
                     type: 'text',
                     x: 100,
                     y: yPosition + (index * 60),
