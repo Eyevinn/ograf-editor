@@ -21,11 +21,34 @@ export class OGrafTemplate {
         
         this.elements = [];
         this.webComponent = null;
+
+        // Default animation settings so a freshly created template animates.
+        // The generated component also defaults per field defensively, so a
+        // partial or empty object never produces invalid CSS.
+        this.animationSettings = {
+            slideInDuration: 500,
+            slideInType: 'ease-out',
+            slideInDirection: 'left',
+            slideOutDuration: 500,
+            slideOutType: 'ease-in',
+            slideOutDirection: 'left'
+        };
+    }
+
+    // Turn arbitrary user input into a safe OGraf id: lowercase, hyphen-separated,
+    // only [a-z0-9-]. e.g. "My Lower Third" -> "my-lower-third".
+    static slugifyId(rawId) {
+        const slug = String(rawId || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        return slug || 'template';
     }
 
     static createFromType(type, id, name, description) {
         const template = new OGrafTemplate();
-        template.manifest.id = id;
+        template.manifest.id = OGrafTemplate.slugifyId(id);
         template.manifest.name = name;
         template.manifest.description = description;
         
@@ -341,131 +364,197 @@ export class OGrafTemplate {
         return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
     }
 
+    // Build a custom-element tag that is always valid, regardless of the id.
+    // Rules: lowercase, only [a-z0-9-], collapse repeats, no leading digit/hyphen,
+    // and it must contain a hyphen (required for custom elements).
+    safeTagName() {
+        let slug = String(this.manifest.id || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9-]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        if (!slug) {
+            slug = 'graphic';
+        }
+        // Always prefix so the tag contains a hyphen and never starts with a digit/hyphen.
+        return `ograf-${slug}`;
+    }
+
+    // Build a class identifier that is always a valid JS identifier.
+    // PascalCase from the slug, prefixed so it always starts with a letter.
+    safeClassName() {
+        const pascal = String(this.manifest.id || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join('');
+        // Prefix guarantees a leading letter even when pascal is empty or starts with a digit.
+        return `OGraf${pascal}Graphic`;
+    }
+
     generateWebComponent() {
         // Generate the element styles at template generation time
         const elementStyles = this.generateElementStyles();
-        
+
         // Serialize elements data and animation settings for the component
         const elementsData = JSON.stringify(this.elements);
         const animationSettingsData = JSON.stringify(this.animationSettings || {});
-        
+
+        const className = this.safeClassName();
+
         const componentCode = `
-class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
+export default class ${className} extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
         this.data = {};
         this.isVisible = false;
+        this.currentStep = 0;
         this.elements = ${elementsData};
         this.animationSettings = ${animationSettingsData};
         this.elementStyles = \`${elementStyles}\`;
     }
 
-    connectedCallback() {
-        this.render();
-    }
-
-    async load() {
+    // OGraf lifecycle: load applies the initial data and renders the graphic.
+    async load(params = {}) {
+        const { data } = params;
+        if (data) {
+            this.data = { ...this.data, ...data };
+        }
         this.isVisible = false;
         this.render();
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async dispose() {
+    async dispose(params = {}) {
         this.isVisible = false;
+        this.currentStep = 0;
         this.shadowRoot.innerHTML = '';
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async playAction(skipAnimation = false) {
+    async playAction(params = {}) {
+        const { skipAnimation } = params;
         this.isVisible = true;
+        this.currentStep = 1;
         this.render();
-        
+
         if (!skipAnimation) {
             // Wait for render to complete before starting animation
             await new Promise(resolve => requestAnimationFrame(resolve));
-            // Trigger slide-in animation for lower third
-            await this.customAction('slideIn');
+            await this.animateSlideIn();
         }
-        
-        return Promise.resolve();
+
+        return { statusCode: 200, currentStep: this.currentStep };
     }
 
-    async stopAction(skipAnimation = false) {
+    async stopAction(params = {}) {
+        const { skipAnimation } = params;
         if (!skipAnimation) {
             // Trigger slide-out animation before hiding
-            await this.customAction('slideOut');
+            await this.animateSlideOut();
         }
-        
+
         this.isVisible = false;
-        
+        this.currentStep = 0;
+
         // Completely clear the shadow DOM - back to empty state
         this.shadowRoot.innerHTML = '';
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async updateAction(data) {
-        this.data = { ...this.data, ...data };
+    async updateAction(params = {}) {
+        const { data } = params;
+        if (data) {
+            this.data = { ...this.data, ...data };
+        }
         this.render();
-        return Promise.resolve();
+        return { statusCode: 200 };
     }
 
-    async customAction(action, data) {
-        switch (action) {
+    async customAction(params = {}) {
+        const { id } = params;
+        switch (id) {
             case 'slideIn':
-                return this.animateSlideIn();
+                await this.animateSlideIn();
+                return { statusCode: 200 };
             case 'slideOut':
-                return this.animateSlideOut();
+                await this.animateSlideOut();
+                return { statusCode: 200 };
             default:
-                return Promise.resolve();
+                return { statusCode: 200 };
         }
     }
-    
+
+    // Compute the transform that places the whole graphic just off the given
+    // stage edge, derived from the stage size and the elements' bounding box.
+    // This makes the graphic slide fully on/off screen as a unit, regardless of
+    // element size or position. A self-relative percentage (translateX(100%))
+    // only moved an element by its own width, so a small element parked on the
+    // left appeared to start mid-stage instead of off the right edge.
+    offStageTransform(direction) {
+        const elements = this.shadowRoot.querySelectorAll('.element');
+        const stageW = this.offsetWidth || 1920;
+        const stageH = this.offsetHeight || 1080;
+        let minLeft = Infinity, maxRight = -Infinity, minTop = Infinity, maxBottom = -Infinity;
+        elements.forEach(el => {
+            const left = el.offsetLeft;
+            const top = el.offsetTop;
+            minLeft = Math.min(minLeft, left);
+            maxRight = Math.max(maxRight, left + el.offsetWidth);
+            minTop = Math.min(minTop, top);
+            maxBottom = Math.max(maxBottom, top + el.offsetHeight);
+        });
+        switch (direction) {
+            case 'right': return \`translate(\${stageW - minLeft}px, 0px)\`;
+            case 'top': return \`translate(0px, \${-maxBottom}px)\`;
+            case 'bottom': return \`translate(0px, \${stageH - minTop}px)\`;
+            case 'left':
+            default: return \`translate(\${-maxRight}px, 0px)\`;
+        }
+    }
+
     animateSlideIn() {
         return new Promise((resolve) => {
-            const settings = this.animationSettings || {
-                slideInDuration: 500,
-                slideInType: 'ease-out',
-                slideInDirection: 'left'
-            };
-            
+            const settings = this.animationSettings || {};
+
             const elements = this.shadowRoot.querySelectorAll('.element');
             if (elements.length === 0) {
                 resolve();
                 return;
             }
-            
-            const duration = settings.slideInDuration;
-            const timing = settings.slideInType;
-            const direction = settings.slideInDirection;
-            
-            let transform = '';
-            switch (direction) {
-                case 'left': transform = 'translateX(-100%)'; break;
-                case 'right': transform = 'translateX(100%)'; break;
-                case 'top': transform = 'translateY(-100%)'; break;
-                case 'bottom': transform = 'translateY(100%)'; break;
-                default: transform = 'translateX(-100%)';
-            }
-            
+
+            // Default per field so an empty or partial settings object still
+            // produces valid CSS (an empty object is truthy, so a single
+            // object-level fallback would not catch it).
+            const duration = Number.isFinite(settings.slideInDuration) ? settings.slideInDuration : 500;
+            const timing = settings.slideInType || 'ease-out';
+            const direction = settings.slideInDirection || 'left';
+
+            // Start fully off the chosen stage edge, then slide to rest.
+            const startTransform = this.offStageTransform(direction);
+
             elements.forEach(element => {
-                // Set initial position before animation
-                element.style.transform = transform;
+                element.style.transform = startTransform;
                 element.style.transition = 'none';
             });
-            
-            // Force a reflow to ensure the initial transform is applied
-            this.shadowRoot.offsetHeight;
-            
+
+            // Force a reflow on the host so the initial transform is committed
+            // before the transition is enabled (ShadowRoot has no offsetHeight).
+            void this.offsetHeight;
+
             elements.forEach(element => {
                 element.style.transition = \`transform \${duration}ms \${timing}\`;
-                
-                // Trigger animation
+
+                // Trigger animation to the resting position.
                 requestAnimationFrame(() => {
-                    element.style.transform = 'translateX(0) translateY(0)';
+                    element.style.transform = 'translate(0px, 0px)';
                 });
             });
-            
+
             // Resolve after animation completes
             setTimeout(resolve, duration);
         });
@@ -473,34 +562,24 @@ class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
     
     animateSlideOut() {
         return new Promise((resolve) => {
-            const settings = this.animationSettings || {
-                slideOutDuration: 500,
-                slideOutType: 'ease-in',
-                slideOutDirection: 'left'
-            };
-            
+            const settings = this.animationSettings || {};
+
             const elements = this.shadowRoot.querySelectorAll('.element');
             if (elements.length === 0) {
                 resolve();
                 return;
             }
-            
-            const duration = settings.slideOutDuration;
-            const timing = settings.slideOutType;
+
+            const duration = Number.isFinite(settings.slideOutDuration) ? settings.slideOutDuration : 500;
+            const timing = settings.slideOutType || 'ease-in';
             const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
-            
-            let transform = '';
-            switch (direction) {
-                case 'left': transform = 'translateX(-100%)'; break;
-                case 'right': transform = 'translateX(100%)'; break;
-                case 'top': transform = 'translateY(-100%)'; break;
-                case 'bottom': transform = 'translateY(100%)'; break;
-                default: transform = 'translateX(-100%)';
-            }
-            
+
+            // Slide the whole graphic off the chosen stage edge as a unit.
+            const endTransform = this.offStageTransform(direction);
+
             elements.forEach(element => {
                 element.style.transition = \`transform \${duration}ms \${timing}\`;
-                element.style.transform = transform;
+                element.style.transform = endTransform;
             });
             
             // Resolve after animation completes
@@ -565,7 +644,7 @@ class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
 
     interpolateContent(content) {
         const result = content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
-            const value = this.data[key] || match;
+            const value = key in this.data ? this.data[key] : match;
             return value;
         });
         return result;
@@ -575,9 +654,7 @@ class ${this.toCamelCase(this.manifest.id)}Graphic extends HTMLElement {
         return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
     }
 }
-
-customElements.define('${this.manifest.id}-graphic', ${this.toCamelCase(this.manifest.id)}Graphic);
-        `;
+`;
 
         this.webComponent = componentCode.trim();
         return this.webComponent;

@@ -1,3 +1,7 @@
+// Wire Monaco's web workers (via Vite) before any Monaco code loads, so the
+// language services don't throw "Unexpected usage".
+import '../monaco-environment.js';
+
 export class CodeEditor {
     constructor(containerElement, templateManager) {
         this.container = containerElement;

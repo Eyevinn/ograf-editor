@@ -102,8 +102,19 @@ export class PreviewEngine {
         try {
             const template = this.templateManager.getCurrentTemplate();
             if (!template) {
+                this.teardownComponent();
+                this.updateControlButtons();
+                this.currentTemplate = null;
                 this.renderEmptyState();
                 return;
+            }
+
+            // When the selected template actually changes, drop the previous
+            // template's preview data so its keys do not leak into the new one.
+            // renderDataInputs repopulates from the new template's schema.
+            const previousId = this.currentTemplate && this.currentTemplate.manifest.id;
+            if (previousId !== template.manifest.id) {
+                this.previewData = {};
             }
 
             this.currentTemplate = template;
@@ -183,10 +194,37 @@ export class PreviewEngine {
         });
     }
 
+    // Stop, dispose, and forget the current component, and reset playback
+    // state. Called whenever the preview frame is rebuilt (template switch or
+    // re-render), so the preview never keeps a previous template's component,
+    // "Playing..." button, or play flag.
+    teardownComponent() {
+        if (this.currentComponent) {
+            try {
+                if (this.isPlaying && typeof this.currentComponent.stopAction === 'function') {
+                    this.currentComponent.stopAction({ skipAnimation: true });
+                }
+                if (typeof this.currentComponent.dispose === 'function') {
+                    this.currentComponent.dispose({});
+                }
+            } catch (error) {
+                // Ignore teardown errors; the component is being discarded.
+            }
+        }
+        this.currentComponent = null;
+        this.isPlaying = false;
+        this.previewContentCreated = false;
+    }
+
     setupPreviewDocument() {
         if (!this.previewFrame || !this.currentTemplate) return;
 
         try {
+            // Tear down any component from the previous render before wiping the
+            // frame, then reflect the stopped state in the controls.
+            this.teardownComponent();
+            this.updateControlButtons();
+
             // Clear previous content first
             this.previewFrame.innerHTML = '';
             
@@ -203,19 +241,14 @@ export class PreviewEngine {
             scaledContainer.style.border = '1px solid #333333';
             
 
-            // Always regenerate the web component to ensure latest styles
-            if (typeof this.currentTemplate.generateWebComponent === 'function') {
-                if (typeof this.currentTemplate.generateElementStyles === 'function') {
-                    this.currentTemplate.generateWebComponent();
-                } else {
-                    this.generateBasicWebComponent();
-                }
-            } else {
-                this.showWebComponentError('Template does not support web components', 
+            // The component module is generated and imported in createPreviewComponent
+            // when Play is pressed, so it always reflects the latest elements/styles.
+            if (typeof this.currentTemplate.generateWebComponent !== 'function') {
+                this.showWebComponentError('Template does not support web components',
                     new Error('generateWebComponent method not available'));
                 return;
             }
-            
+
             // Add to preview frame immediately (empty black container)
             this.previewFrame.appendChild(scaledContainer);
             
@@ -232,36 +265,50 @@ export class PreviewEngine {
         }
     }
 
-    createPreviewComponent(container) {
+    // Load the exact ES module that export produces. We build a Blob from the
+    // generated component code, import() it, take the default export (the
+    // Graphic class), and register it under a unique tag per load so reloading
+    // never hits "this name has already been used with this registry".
+    async createPreviewComponent(container) {
         const template = this.currentTemplate;
-        const componentId = template.manifest.id;
-        
-        // Define the custom element class if not already defined
-        if (!customElements.get(`${componentId}-graphic`)) {
-            try {
-                // Execute the component code to register the custom element
-                const componentCode = template.webComponent;
-                
-                if (!componentCode) {
-                    template.generateWebComponent();
-                }
-                
-                // Convert ES6 module syntax to browser-compatible code
-                const browserCode = this.convertModuleCodeForBrowser(componentCode, componentId);
-                
-                // Create and execute a script element for module code
-                const script = document.createElement('script');
-                script.textContent = browserCode;
-                document.head.appendChild(script);
-                
-            } catch (error) {
-                this.showWebComponentError('Failed to register custom element', error);
-                return;
+
+        // Always regenerate to pick up the latest elements/styles.
+        const componentCode = template.generateWebComponent();
+
+        let blobUrl;
+        let GraphicClass;
+        try {
+            const blob = new Blob([componentCode], { type: 'text/javascript' });
+            blobUrl = URL.createObjectURL(blob);
+            const module = await import(/* @vite-ignore */ blobUrl);
+            GraphicClass = module.default;
+        } catch (error) {
+            this.showWebComponentError('Failed to load template module', error);
+            return;
+        } finally {
+            if (blobUrl) {
+                URL.revokeObjectURL(blobUrl);
             }
         }
-        
-        // Create custom element HTML
-        const customElement = document.createElement(`${componentId}-graphic`);
+
+        if (typeof GraphicClass !== 'function') {
+            this.showWebComponentError('Template module has no default export',
+                new Error('The generated module did not export a Graphic class as default'));
+            return;
+        }
+
+        // Unique tag per load avoids re-definition errors on reload.
+        PreviewEngine.componentCounter = (PreviewEngine.componentCounter || 0) + 1;
+        const uniqueTag = `ograf-preview-${PreviewEngine.componentCounter}`;
+
+        try {
+            customElements.define(uniqueTag, GraphicClass);
+        } catch (error) {
+            this.showWebComponentError('Failed to register custom element', error);
+            return;
+        }
+
+        const customElement = document.createElement(uniqueTag);
         customElement.id = 'graphic-component';
         customElement.style.position = 'absolute';
         customElement.style.top = '0';
@@ -269,187 +316,11 @@ export class PreviewEngine {
         customElement.style.width = '100%';
         customElement.style.height = '100%';
         customElement.style.zIndex = '10';
-        
-        // Add component to container
+
         container.appendChild(customElement);
-        
-        
+
         // Store reference for later use
         this.currentComponent = customElement;
-    }
-
-    convertModuleCodeForBrowser(componentCode, componentId) {
-        // Clean up any old export statements that might still exist
-        let cleanCode = componentCode;
-        
-        // Remove export default if it exists
-        cleanCode = cleanCode.replace(/^export\s+default\s+/m, '');
-        
-        // Ensure we have proper class definition
-        if (!cleanCode.includes('customElements.define')) {
-            // Extract class name
-            const classMatch = cleanCode.match(/class\s+(\w+)\s+extends\s+HTMLElement/);
-            const className = classMatch ? classMatch[1] : `${componentId.charAt(0).toUpperCase() + componentId.slice(1)}Graphic`;
-            
-            // Add custom element definition if missing
-            cleanCode += `\ncustomElements.define('${componentId}-graphic', ${className});`;
-        }
-        
-        // Wrap in IIFE for isolation
-        const browserCode = `
-        (function() {
-            ${cleanCode}
-        })();
-        `;
-        
-        return browserCode;
-    }
-
-    generateBasicWebComponent() {
-        const template = this.currentTemplate;
-        const componentId = template.manifest.id;
-        
-        // Generate element styles manually
-        const elements = template.elements || [];
-        const elementStyles = elements.map(element => {
-            const styles = Object.entries(element.style || {})
-                .map(([key, value]) => `${this.kebabCase(key)}: ${value};`)
-                .join(' ');
-            return `.element-${element.id} { ${styles} }`;
-        }).join('\n');
-        
-        // Serialize elements data
-        const elementsData = JSON.stringify(elements);
-        
-        const componentCode = `
-class ${this.toCamelCase(componentId)}Graphic extends HTMLElement {
-    constructor() {
-        super();
-        this.attachShadow({ mode: 'open' });
-        this.data = {};
-        this.isVisible = false;
-        this.elements = ${elementsData};
-    }
-
-    connectedCallback() {
-        this.render();
-    }
-
-    async load() {
-        this.isVisible = false;
-        this.render();
-        return Promise.resolve();
-    }
-
-    async dispose() {
-        this.isVisible = false;
-        this.shadowRoot.innerHTML = '';
-        return Promise.resolve();
-    }
-
-    async playAction() {
-        this.isVisible = true;
-        this.render();
-        return Promise.resolve();
-    }
-
-    async stopAction() {
-        this.isVisible = false;
-        this.render();
-        return Promise.resolve();
-    }
-
-    async updateAction(data) {
-        this.data = { ...this.data, ...data };
-        this.render();
-        return Promise.resolve();
-    }
-
-    async customAction(action, data) {
-        return Promise.resolve();
-    }
-
-    render() {
-        const style = \`
-            <style>
-                :host {
-                    display: block;
-                    position: relative;
-                    width: 1920px;
-                    height: 1080px;
-                    font-family: Arial, sans-serif;
-                    overflow: hidden;
-                }
-                .element {
-                    position: absolute;
-                    transition: opacity 0.3s ease;
-                    opacity: \${this.isVisible ? '1' : '0'};
-                }
-                ${elementStyles}
-            </style>
-        \`;
-
-        const elements = this.elements.map(element => this.renderElement(element)).join('');
-
-        this.shadowRoot.innerHTML = \`
-            \${style}
-            <div class="container">
-                \${elements}
-            </div>
-        \`;
-    }
-
-    renderElement(element) {
-        const content = this.interpolateContent(element.content || '');
-        
-        switch (element.type) {
-            case 'text':
-                return \`<div class="element element-\${element.id}" style="left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;">\${content}</div>\`;
-            case 'image':
-                return \`<img class="element element-\${element.id}" src="\${content}" style="left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;" />\`;
-            case 'rectangle':
-                return \`<div class="element element-\${element.id}" style="left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;"></div>\`;
-            case 'circle':
-                return \`<div class="element element-\${element.id}" style="left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px; border-radius: 50%;"></div>\`;
-            default:
-                return '';
-        }
-    }
-
-    interpolateContent(content) {
-        return content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
-            return this.data[key] || match;
-        });
-    }
-
-    kebabCase(str) {
-        return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
-    }
-}
-
-customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}Graphic);
-        `;
-
-        // Store the generated component
-        template.webComponent = componentCode.trim();
-    }
-
-    toCamelCase(str) {
-        return str.replace(/-([a-z])/g, (g) => g[1].toUpperCase())
-                 .replace(/^[a-z]/, (g) => g.toUpperCase());
-    }
-
-    kebabCase(str) {
-        return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase();
-    }
-
-
-    interpolateContent(content) {
-        const result = content.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-            const value = this.previewData[key] || match;
-            return value;
-        });
-        return result;
     }
 
     showPreviewError(message) {
@@ -473,52 +344,42 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
     }
 
 
-    initializePreviewComponent() {
-        // Initialize component if it exists
-        if (this.currentComponent) {
-            try {
-                
-                // Try to call load method if available
-                if (typeof this.currentComponent.load === 'function') {
-                    this.currentComponent.load().then(() => {
-                        // Initialize as NOT visible - elements should only show when Play is pressed
-                        this.currentComponent.isVisible = false;
-                        // Small delay to ensure component is loaded
-                        setTimeout(() => {
-                            this.updatePreviewData();
-                        }, 50);
-                    }).catch((error) => {
-                        this.currentComponent.isVisible = false;
-                        this.updatePreviewData();
-                    });
-                } else {
-                    // No load method, initialize as NOT visible
-                    this.currentComponent.isVisible = false;
-                    setTimeout(() => {
-                        this.updatePreviewData();
-                    }, 50);
-                }
-            } catch (error) {
-                this.showWebComponentError('Failed to initialize preview component', error);
-            }
-        } else {
-            this.showWebComponentError('No preview component found', 
+    // Drive the OGraf load lifecycle: apply current preview data at load.
+    async initializePreviewComponent() {
+        if (!this.currentComponent) {
+            this.showWebComponentError('No preview component found',
                 new Error('currentComponent is not available'));
+            return;
+        }
+
+        try {
+            if (typeof this.currentComponent.load === 'function') {
+                await this.currentComponent.load({
+                    data: this.previewData,
+                    renderType: 'realtime',
+                    renderCharacteristics: {}
+                });
+            }
+            // Loaded but not yet playing; elements only show on Play.
+            this.currentComponent.isVisible = false;
+        } catch (error) {
+            this.showWebComponentError('Failed to initialize preview component', error);
         }
     }
 
-    createPreviewContent() {
+    async createPreviewContent() {
         if (!this.scaledContainer || !this.currentTemplate) return;
 
         try {
-            // Only create web component (no fallback)
-            this.createPreviewComponent(this.scaledContainer);
-            
-            // Initialize component
-            setTimeout(() => {
-                this.initializePreviewComponent();
-            }, 100);
-            
+            // Build, import, and register the exact module that export produces.
+            await this.createPreviewComponent(this.scaledContainer);
+
+            if (!this.currentComponent) {
+                // createPreviewComponent already surfaced the error.
+                return;
+            }
+
+            await this.initializePreviewComponent();
         } catch (error) {
             this.showWebComponentError('Failed to create web component preview', error);
         }
@@ -545,16 +406,16 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
         try {
             // First time playing - create the preview content
             if (!this.previewContentCreated) {
-                this.createPreviewContent();
+                await this.createPreviewContent();
                 this.previewContentCreated = true;
             }
 
             if (this.currentComponent && typeof this.currentComponent.playAction === 'function') {
-                await this.currentComponent.playAction();
+                await this.currentComponent.playAction({});
                 this.isPlaying = true;
                 this.updateControlButtons();
             } else {
-                this.showWebComponentError('Web component not properly initialized', 
+                this.showWebComponentError('Web component not properly initialized',
                     new Error('playAction method not available on component'));
             }
         } catch (error) {
@@ -571,7 +432,7 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
             this.updateControlButtons();
 
             if (this.currentComponent && typeof this.currentComponent.stopAction === 'function') {
-                await this.currentComponent.stopAction();
+                await this.currentComponent.stopAction({});
             } else {
                 this.showWebComponentError('Web component not properly initialized', 
                     new Error('stopAction method not available on component'));
@@ -587,9 +448,9 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
 
         try {
             if (this.currentComponent && typeof this.currentComponent.updateAction === 'function') {
-                await this.currentComponent.updateAction(this.previewData);
+                await this.currentComponent.updateAction({ data: this.previewData });
             } else {
-                this.showWebComponentError('Web component not properly initialized', 
+                this.showWebComponentError('Web component not properly initialized',
                     new Error('updateAction method not available on component'));
             }
         } catch (error) {
@@ -603,9 +464,9 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
         try {
             // Update the custom component
             if (this.currentComponent && typeof this.currentComponent.updateAction === 'function') {
-                await this.currentComponent.updateAction(this.previewData);
+                await this.currentComponent.updateAction({ data: this.previewData });
             }
-            
+
         } catch (error) {
             this.showWebComponentError('Failed to update preview data', error);
         }
@@ -624,23 +485,20 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
         if (this.isPlaying) {
             // Reset the component creation flag to force recreation
             this.previewContentCreated = false;
-            
+
             // Clear the current component
             if (this.scaledContainer) {
                 this.scaledContainer.innerHTML = '';
             }
             this.currentComponent = null;
-            
+
             // Recreate and resume playing
-            this.createPreviewContent();
-            this.previewContentCreated = true;
-            
-            // Small delay to ensure component is ready
-            setTimeout(() => {
+            this.createPreviewContent().then(() => {
+                this.previewContentCreated = true;
                 if (this.currentComponent) {
-                    this.currentComponent.playAction();
+                    this.currentComponent.playAction({});
                 }
-            }, 100);
+            });
         } else {
             // Just mark that component needs to be recreated on next play
             this.previewContentCreated = false;
@@ -678,7 +536,7 @@ customElements.define('${componentId}-graphic', ${this.toCamelCase(componentId)}
 
         try {
             if (this.currentComponent && typeof this.currentComponent.customAction === 'function') {
-                await this.currentComponent.customAction(actionName, data);
+                await this.currentComponent.customAction({ id: actionName, payload: data });
             }
         } catch (error) {
             // Error executing custom action

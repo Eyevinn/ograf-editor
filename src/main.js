@@ -125,12 +125,35 @@ class OGrafEditor {
     }
 
     setupTemplateList() {
+        // Bind the list's click handler ONCE via delegation. updateTemplateList
+        // only rewrites innerHTML, so re-binding per render (previously every
+        // second via setInterval) stacked duplicate listeners and made a single
+        // click run dozens of selectTemplate/refresh cycles, locking up the UI.
+        const listContainer = document.querySelector('#template-list');
+        if (listContainer) {
+            listContainer.addEventListener('click', (e) => {
+                // Empty-state "Create Your First Template" button.
+                if (e.target.closest('#create-first-template')) {
+                    this.showNewTemplateModal();
+                    return;
+                }
+                // Delete action.
+                if (e.target.classList.contains('delete-btn')) {
+                    const item = e.target.closest('.template-item');
+                    if (item) this.deleteTemplate(item.dataset.templateId);
+                    return;
+                }
+                // Select a template.
+                const templateItem = e.target.closest('.template-item');
+                if (templateItem && !e.target.classList.contains('template-action-btn')) {
+                    this.selectTemplate(templateItem.dataset.templateId);
+                }
+            });
+        }
+
+        // Templates change only via create/select/delete/import, each of which
+        // refreshes the list explicitly, so no polling is needed.
         this.updateTemplateList();
-        
-        // Listen for template changes
-        setInterval(() => {
-            this.updateTemplateList();
-        }, 1000);
     }
 
     setupToolbar() {
@@ -244,12 +267,6 @@ class OGrafEditor {
                     <button id="create-first-template" class="btn btn-primary">Create Your First Template</button>
                 </div>
             `;
-            
-            // Re-setup event listener for the new button
-            const createFirstBtn = listContainer.querySelector('#create-first-template');
-            if (createFirstBtn) {
-                createFirstBtn.addEventListener('click', () => this.showNewTemplateModal());
-            }
         } else {
             const templateItems = templates.map(template => {
                 const isActive = currentTemplate && currentTemplate.manifest.id === template.manifest.id;
@@ -268,18 +285,7 @@ class OGrafEditor {
             }).join('');
 
             listContainer.innerHTML = `<div class="template-list-container">${templateItems}</div>`;
-
-            // Setup event listeners for template items
-            listContainer.addEventListener('click', (e) => {
-                const templateItem = e.target.closest('.template-item');
-                if (templateItem && !e.target.classList.contains('template-action-btn')) {
-                    this.selectTemplate(templateItem.dataset.templateId);
-                }
-                if (e.target.classList.contains('delete-btn')) {
-                    const templateId = e.target.closest('.template-item').dataset.templateId;
-                    this.deleteTemplate(templateId);
-                }
-            });
+            // Click handling is delegated once in setupTemplateList.
         }
     }
 
