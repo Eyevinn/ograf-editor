@@ -9,20 +9,31 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .js,.ts --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "monaco-editor": "^0.47.0",
-    "file-saver": "^2.0.5"
+    "file-saver": "^2.0.5",
+    "monaco-editor": "^0.47.0"
   },
   "devDependencies": {
-    "vite": "^5.0.0",
-    "typescript": "^5.2.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "eslint": "^8.45.0"
+    "eslint": "^8.45.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.2.0",
+    "vite": "^5.0.0",
+    "vitest": "^4.1.8"
   },
-  "keywords": ["ograf", "ebu", "graphics", "broadcast", "template", "editor"],
+  "keywords": [
+    "ograf",
+    "ebu",
+    "graphics",
+    "broadcast",
+    "template",
+    "editor"
+  ],
   "author": "OGraf Editor",
   "license": "MIT"
 }
