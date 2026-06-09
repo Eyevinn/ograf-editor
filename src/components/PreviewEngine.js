@@ -98,6 +98,13 @@ export class PreviewEngine {
 
     render() {
         try {
+            // Cancel any setup scheduled by a previous render so it cannot fire
+            // against a stale frame after a fast template switch.
+            if (this.setupTimeoutId) {
+                clearTimeout(this.setupTimeoutId);
+                this.setupTimeoutId = null;
+            }
+
             const template = this.templateManager.getCurrentTemplate();
             if (!template) {
                 this.teardownComponent();
@@ -115,14 +122,31 @@ export class PreviewEngine {
                 this.previewData = {};
             }
 
+            // Tear down the previous template's component synchronously, before
+            // scheduling setup, so play state and the old component never
+            // straddle a template switch.
+            this.teardownComponent();
+            this.updateControlButtons();
+
             this.currentTemplate = template;
             this.renderDataInputs();
-            
-            // Add a small delay to ensure DOM is ready
-            setTimeout(() => {
+
+            // Add a small delay to ensure DOM is ready. Store the handle and
+            // clear any previously scheduled setup so a fast template switch
+            // (or select-then-play) cannot run setup against a stale template.
+            if (this.setupTimeoutId) {
+                clearTimeout(this.setupTimeoutId);
+            }
+            const scheduledForId = template.manifest.id;
+            this.setupTimeoutId = setTimeout(() => {
+                this.setupTimeoutId = null;
+                // Bail if the selected template changed while we were waiting.
+                if (!this.currentTemplate || this.currentTemplate.manifest.id !== scheduledForId) {
+                    return;
+                }
                 this.setupPreviewDocument();
             }, 50);
-            
+
         } catch (error) {
             this.showPreviewError('Failed to render preview');
         }
@@ -157,10 +181,13 @@ export class PreviewEngine {
             return;
         }
 
-        // Initialize preview data with default values
+        // Initialize preview data with default values. Use a presence check so
+        // falsy defaults (0, false, '') survive instead of collapsing to ''.
         Object.entries(schema.properties).forEach(([key, prop]) => {
             if (this.previewData[key] === undefined) {
-                this.previewData[key] = prop.default || '';
+                this.previewData[key] = (prop.default !== undefined && prop.default !== null)
+                    ? prop.default
+                    : '';
             }
         });
 
@@ -172,7 +199,16 @@ export class PreviewEngine {
         dataInputsContainer.innerHTML = '';
 
         Object.entries(schema.properties).forEach(([key, prop]) => {
-            const currentValue = this.previewData[key] || prop.default || '';
+            // Only fall back to the default when the key is truly absent, so a
+            // falsy current value (0/false/'') is not silently replaced.
+            let currentValue;
+            if (this.previewData[key] !== undefined && this.previewData[key] !== null) {
+                currentValue = this.previewData[key];
+            } else if (prop.default !== undefined && prop.default !== null) {
+                currentValue = prop.default;
+            } else {
+                currentValue = '';
+            }
 
             const group = document.createElement('div');
             group.className = 'data-input-group';
@@ -185,7 +221,9 @@ export class PreviewEngine {
             input.className = 'data-input';
             input.dataset.property = key;
             input.value = currentValue;
-            input.placeholder = prop.default || '';
+            input.placeholder = (prop.default !== undefined && prop.default !== null)
+                ? prop.default
+                : '';
 
             // Re-bind the change/input listener on the created input.
             input.addEventListener('input', (e) => {
@@ -204,6 +242,11 @@ export class PreviewEngine {
     // re-render), so the preview never keeps a previous template's component,
     // "Playing..." button, or play flag.
     teardownComponent() {
+        // Cancel any pending setup so it cannot run against a torn-down frame.
+        if (this.setupTimeoutId) {
+            clearTimeout(this.setupTimeoutId);
+            this.setupTimeoutId = null;
+        }
         if (this.currentComponent) {
             try {
                 if (this.isPlaying && typeof this.currentComponent.stopAction === 'function') {
@@ -406,6 +449,14 @@ export class PreviewEngine {
     }
 
     showWebComponentError(message, error) {
+        // Always log so the failure is observable even when there is no surface
+        // to render it into.
+        console.error('Web component error:', message, error);
+
+        // No scaled container means there is nowhere to render the error (e.g.
+        // setup has not built the frame yet); logging above is the fallback.
+        if (!this.scaledContainer) return;
+
         const safeMessage = this.escapeHtml(error?.message || 'Unknown error');
         const safeStack = error?.stack ? `<pre>${this.escapeHtml(error.stack)}</pre>` : '';
         this.scaledContainer.innerHTML = `
@@ -453,13 +504,20 @@ export class PreviewEngine {
             this.isPlaying = false;
             this.updateControlButtons();
 
-            if (this.currentComponent && typeof this.currentComponent.stopAction === 'function') {
+            // No component is a normal state (e.g. Stop before Play, or after a
+            // template switch). Treat it as a silent no-op: state is already
+            // reset above, so there is nothing to do and nothing to warn about.
+            if (!this.currentComponent) {
+                return;
+            }
+
+            if (typeof this.currentComponent.stopAction === 'function') {
                 await this.currentComponent.stopAction({});
             } else {
-                this.showWebComponentError('Web component not properly initialized', 
+                this.showWebComponentError('Web component not properly initialized',
                     new Error('stopAction method not available on component'));
             }
-            
+
         } catch (error) {
             this.showWebComponentError('Failed to stop preview', error);
         }
@@ -494,43 +552,47 @@ export class PreviewEngine {
         }
     }
 
+    // Recreate the live preview from the latest template. The generated
+    // component bakes elements/styles/timeline at generateWebComponent() time
+    // and never reads animationSettings, so the only way to reflect an edit is
+    // to rebuild the component. We always go through the recreate path; there is
+    // no live-mutation shortcut.
     reloadComponent() {
         if (!this.currentTemplate) return;
-        
-        // Update existing component's animation settings if it exists
-        if (this.currentComponent && this.currentTemplate.animationSettings) {
-            this.currentComponent.animationSettings = { ...this.currentTemplate.animationSettings };
+
+        // Was the user watching the graphic when the edit landed? If so we must
+        // rebuild and resume playback so the preview stays live.
+        const wasPlaying = this.isPlaying;
+
+        // Force recreation on next play and drop the current component.
+        this.previewContentCreated = false;
+        if (this.scaledContainer) {
+            this.scaledContainer.innerHTML = '';
+        }
+        this.currentComponent = null;
+        this.isPlaying = false;
+
+        if (!wasPlaying) {
+            // Not playing: leave it torn down; the next Play recreates content.
+            this.updateControlButtons();
             return;
         }
-        
-        // If no existing component or currently playing, recreate
-        if (this.isPlaying) {
-            // Reset the component creation flag to force recreation
-            this.previewContentCreated = false;
 
-            // Clear the current component
-            if (this.scaledContainer) {
-                this.scaledContainer.innerHTML = '';
+        // Was playing: recreate the content and resume playback.
+        this.createPreviewContent().then(async () => {
+            this.previewContentCreated = true;
+            if (this.currentComponent && typeof this.currentComponent.playAction === 'function') {
+                this.isPlaying = true;
+                this.updateControlButtons();
+                await this.currentComponent.playAction({});
+            } else {
+                this.updateControlButtons();
             }
-            this.currentComponent = null;
-
-            // Recreate and resume playing
-            this.createPreviewContent().then(() => {
-                this.previewContentCreated = true;
-                if (this.currentComponent) {
-                    this.currentComponent.playAction({});
-                }
-            });
-        } else {
-            // Just mark that component needs to be recreated on next play
-            this.previewContentCreated = false;
-            
-            // Clear any existing component
-            if (this.scaledContainer) {
-                this.scaledContainer.innerHTML = '';
-            }
-            this.currentComponent = null;
-        }
+        }).catch((error) => {
+            this.isPlaying = false;
+            this.updateControlButtons();
+            this.showWebComponentError('Failed to reload preview', error);
+        });
     }
 
 
@@ -633,6 +695,12 @@ export class PreviewEngine {
     }
 
     destroy() {
+        // Cancel any pending setup before tearing down the frame.
+        if (this.setupTimeoutId) {
+            clearTimeout(this.setupTimeoutId);
+            this.setupTimeoutId = null;
+        }
+
         // Clean up event listeners and iframe
         if (this.previewFrame) {
             this.previewFrame.remove();
