@@ -554,6 +554,11 @@
     display: none;
 }
 
+.property-section-header:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
 /* Data Inputs editor */
 .data-input-list {
     display: flex;

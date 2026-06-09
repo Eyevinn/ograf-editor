@@ -205,6 +205,11 @@ export class PropertyPanel {
                     }
                     section.classList.toggle('collapsed', nowCollapsed);
                     header.setAttribute('aria-expanded', String(!nowCollapsed));
+                    // If we just hid a body that held focus, move focus to the
+                    // header so keyboard users do not lose their place.
+                    if (nowCollapsed && section.contains(document.activeElement)) {
+                        header.focus();
+                    }
                 });
             }
         });
