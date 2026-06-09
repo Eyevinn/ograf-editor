@@ -87,6 +87,30 @@ body.sidebar-resizing {
     user-select: none;
 }
 
+/* Horizontal divider to resize the Templates / Properties split. */
+.panel-resizer {
+    height: 6px;
+    flex-shrink: 0;
+    cursor: row-resize;
+    background-color: #404040;
+    transition: background-color 0.15s ease;
+}
+
+.panel-resizer:hover,
+.panel-resizer.dragging {
+    background-color: #007acc;
+}
+
+.panel-resizer:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: -2px;
+}
+
+body.panel-resizing {
+    cursor: row-resize;
+    user-select: none;
+}
+
 .panel {
     border-bottom: 1px solid #404040;
     flex: 1;

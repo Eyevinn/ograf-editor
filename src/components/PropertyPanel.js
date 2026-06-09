@@ -239,8 +239,8 @@ export class PropertyPanel {
         return `
             <div class="property-section collapsible" data-section="datainputs">
                 <button type="button" class="property-section-header" aria-expanded="true"><span class="section-caret" aria-hidden="true">&#9662;</span>Data Inputs</button>
-                <div class="data-input-group" role="group" aria-label="Data Inputs">
-                    <p class="section-description">Define the variables an operator can fill in when running this template. Each one becomes a {{token}} you place in text elements.</p>
+                <div class="data-inputs-body" role="group" aria-label="Data Inputs">
+                    <p class="section-description">Variables an operator fills in when running the template. Each becomes a {{token}} you place in text elements.</p>
 
                     <div class="data-input-list">
                         ${rowsHtml}

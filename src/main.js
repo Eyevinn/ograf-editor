@@ -62,6 +62,67 @@ class OGrafEditor {
         this.setupTemplateList();
         this.setupToolbar();
         this.setupSidebarResizer();
+        this.setupPanelResizer();
+    }
+
+    // Draggable divider between the Templates and Properties panels so the user
+    // can give either one more room. Sets the templates panel height; the
+    // properties panel takes the rest. Remembered across sessions.
+    setupPanelResizer() {
+        const sidebar = document.querySelector('.sidebar');
+        const panel = document.querySelector('.sidebar .template-list');
+        const resizer = document.querySelector('.panel-resizer');
+        if (!sidebar || !panel || !resizer) return;
+
+        const MIN = 120;
+        const STORAGE_KEY = 'ograf-templates-panel-height';
+        const maxHeight = () => Math.max(MIN, sidebar.clientHeight - 160);
+        const clamp = (h) => Math.max(MIN, Math.min(maxHeight(), h));
+
+        const applyHeight = (h, persist) => {
+            const height = clamp(h);
+            panel.style.flex = `0 0 ${height}px`;
+            panel.style.maxHeight = 'none';
+            resizer.setAttribute('aria-valuenow', String(height));
+            if (persist) {
+                try { localStorage.setItem(STORAGE_KEY, String(height)); } catch (e) { /* ignore */ }
+            }
+        };
+
+        const saved = (() => {
+            try { return parseInt(localStorage.getItem(STORAGE_KEY), 10); } catch (e) { return NaN; }
+        })();
+        if (Number.isFinite(saved)) applyHeight(saved, false);
+
+        resizer.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const startY = e.clientY;
+            const startHeight = panel.offsetHeight;
+            resizer.classList.add('dragging');
+            document.body.classList.add('panel-resizing');
+
+            const onMove = (moveEvent) => applyHeight(startHeight + (moveEvent.clientY - startY), false);
+            const onUp = () => {
+                resizer.classList.remove('dragging');
+                document.body.classList.remove('panel-resizing');
+                applyHeight(panel.offsetHeight, true);
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        resizer.addEventListener('keydown', (e) => {
+            const step = 20;
+            if (e.key === 'ArrowUp') {
+                applyHeight(panel.offsetHeight - step, true);
+                e.preventDefault();
+            } else if (e.key === 'ArrowDown') {
+                applyHeight(panel.offsetHeight + step, true);
+                e.preventDefault();
+            }
+        });
     }
 
     // Let the user widen the sidebar by dragging the divider (or arrow keys when
