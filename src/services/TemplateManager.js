@@ -75,8 +75,11 @@ export class TemplateManager {
             template.generateWebComponent();
         }
 
+        // Write a spec-clean manifest (only OGraf-allowed top-level keys plus
+        // v_ vendor extensions). The editor's elements/webComponent and any
+        // export-wrapper fields must never appear inside the .ograf.json manifest.
         const files = {
-            [`${id}.ograf.json`]: JSON.stringify(template.manifest, null, 2),
+            [`${id}.ograf.json`]: JSON.stringify(template.buildManifest(), null, 2),
             [`${template.manifest.main}`]: template.webComponent
         };
 

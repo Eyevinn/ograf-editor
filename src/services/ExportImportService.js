@@ -1,4 +1,5 @@
 import { saveAs } from 'file-saver';
+import { OGrafTemplate } from '../models/OGrafTemplate.js';
 
 export class ExportImportService {
     constructor(templateManager) {
@@ -209,8 +210,15 @@ export class ExportImportService {
      * Generate a basic web component from manifest
      */
     generateBasicComponent(manifest) {
-        const className = this.toCamelCase(manifest.id) + 'Graphic';
-        
+        // Validate the id before splicing it into generated code / a tag name.
+        // A malicious id (e.g. with quotes or markup) could otherwise break out
+        // of the string context; fall back to a safe default if it is invalid.
+        const safeId = /^[a-z0-9-_]+$/.test(manifest.id || '') ? manifest.id : 'ograf-template';
+        const className = this.toCamelCase(safeId) + 'Graphic';
+
+        // Emit the name as a safe JS string literal, not spliced as code.
+        const nameLiteral = JSON.stringify(manifest.name || 'OGraf Template');
+
         return `
 class ${className} extends HTMLElement {
     constructor() {
@@ -218,6 +226,20 @@ class ${className} extends HTMLElement {
         this.attachShadow({ mode: 'open' });
         this.data = {};
         this.isVisible = false;
+        this.templateName = ${nameLiteral};
+    }
+
+    // Escape untrusted runtime data before it enters shadow DOM innerHTML.
+    escapeHtml(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;');
     }
 
     connectedCallback() {
