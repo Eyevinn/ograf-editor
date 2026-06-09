@@ -134,9 +134,15 @@ export class ExportImportService {
             templateData.webComponent
         );
         
-        // Restore elements if available
+        // Restore elements if available. Sanitize each element id: it is spliced
+        // into an `element-<id>` class attribute and a generated `<style>` block,
+        // so an imported id like `" onmouseover=...` could otherwise break out of
+        // that context. slugifyId restricts it to [a-z0-9-].
         if (templateData.elements) {
-            template.elements = templateData.elements;
+            template.elements = templateData.elements.map(element => ({
+                ...element,
+                id: OGrafTemplate.slugifyId(element.id)
+            }));
         }
         
         return template;
@@ -313,7 +319,7 @@ class ${className} extends HTMLElement {
             \${style}
             <div class="container">
                 <div class="content">
-                    ${manifest.name || 'OGraf Template'}
+                    \${this.escapeHtml(this.templateName)}
                     \${this.renderData()}
                 </div>
             </div>
@@ -321,8 +327,8 @@ class ${className} extends HTMLElement {
     }
 
     renderData() {
-        return Object.entries(this.data).map(([key, value]) => 
-            \`<div>\${key}: \${value}</div>\`
+        return Object.entries(this.data).map(([key, value]) =>
+            \`<div>\${this.escapeHtml(key)}: \${this.escapeHtml(value)}</div>\`
         ).join('');
     }
 }

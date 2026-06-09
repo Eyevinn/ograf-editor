@@ -360,11 +360,23 @@ export class OGrafTemplate {
         }
     }
 
+    // Reject CSS style values that could break out of a `key: value;` declaration
+    // inside the generated `<style>` block. A crafted value containing { } < > or
+    // a double quote could otherwise close the rule or the <style> element and
+    // inject markup. Legitimate values (colors, px, rgba(), Arial, sans-serif)
+    // contain none of these, so they pass through untouched.
+    static sanitizeCssValue(value) {
+        const str = String(value);
+        return /[{}<>"]/.test(str) ? '' : str;
+    }
+
     generateElementStyles() {
-        // Generate CSS styles for all elements
+        // Generate CSS styles for all elements. element.id is already slugified on
+        // import, and each value is checked so it cannot escape the declaration or
+        // the surrounding <style> element.
         return this.elements.map(element => {
             const styles = Object.entries(element.style || {})
-                .map(([key, value]) => `${this.kebabCase(key)}: ${value};`)
+                .map(([key, value]) => `${this.kebabCase(key)}: ${OGrafTemplate.sanitizeCssValue(value)};`)
                 .join(' ');
             return `.element-${element.id} { ${styles} }`;
         }).join('\n');
@@ -654,9 +666,12 @@ export default class ${className} extends HTMLElement {
     renderElement(element) {
         const baseStyles = \`left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;\`;
         
-        // Convert element.style object to CSS string
+        // Convert element.style object to CSS string. Escape each value for the
+        // double-quoted style="..." attribute context so an imported style value
+        // cannot close the attribute and inject markup. element.x/y/width/height
+        // are numbers set by the editor, so baseStyles needs no escaping.
         const additionalStyles = element.style ? Object.entries(element.style)
-            .map(([key, value]) => \`\${this.kebabCase(key)}: \${value};\`)
+            .map(([key, value]) => \`\${this.kebabCase(key)}: \${escapeHtml(value)};\`)
             .join(' ') : '';
         
         const allStyles = baseStyles + ' ' + additionalStyles;
@@ -741,7 +756,16 @@ export default class ${className} extends HTMLElement {
     static fromJSON(json) {
         const template = new OGrafTemplate();
         template.manifest = json.manifest;
-        template.elements = json.elements;
+        // Sanitize each element id before assignment: it is interpolated into an
+        // `element-<id>` class attribute and the generateElementStyles `<style>`
+        // block, so a crafted id from an imported file (e.g. `" onmouseover=...`)
+        // could otherwise break out of that context.
+        template.elements = Array.isArray(json.elements)
+            ? json.elements.map(element => ({
+                ...element,
+                id: OGrafTemplate.slugifyId(element.id)
+            }))
+            : json.elements;
         template.webComponent = json.webComponent;
         return template;
     }
