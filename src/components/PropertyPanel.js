@@ -547,6 +547,13 @@ export class PropertyPanel {
     }
 
     commitDataInputKey(oldKey, input) {
+        // The Key input commits on both 'change' and 'blur'. A successful
+        // rename re-renders the panel via innerHTML, detaching this input;
+        // the trailing blur then fires against the stale, detached node and
+        // would re-commit against gone state and focus a detached element.
+        // No-op once the input is no longer in the document.
+        if (input && !input.isConnected) return;
+
         const template = this.templateManager.getCurrentTemplate();
         if (!template) return;
 
@@ -878,16 +885,30 @@ export class PropertyPanel {
             });
         });
 
-        // Color picker synchronization
+        // Color picker synchronization.
+        //
+        // The native <input type=color> swatch can only hold an opaque
+        // #rrggbb. The text field is the source of truth and may hold values
+        // the swatch cannot represent (rgba with alpha, 'transparent', named
+        // colors). The swatch only writes its hex into the text field on an
+        // EXPLICIT user interaction: the browser fires this 'input'/'change'
+        // event only from real user input, never from our programmatic
+        // picker.value assignment during render. That is what keeps the
+        // initial render from silently overwriting an authored rgba/alpha or
+        // 'transparent' value with the swatch's #000000 fallback. Writing the
+        // hex on a deliberate swatch pick (which does drop alpha) is the
+        // accepted convenience tradeoff.
         const colorPickers = container.querySelectorAll('.color-picker');
         colorPickers.forEach(picker => {
-            picker.addEventListener('input', (e) => {
+            const writeFromSwatch = (e) => {
                 const textInput = picker.nextElementSibling;
                 if (textInput && textInput.classList.contains('color-text')) {
                     textInput.value = e.target.value;
                     textInput.dispatchEvent(new Event('input'));
                 }
-            });
+            };
+            picker.addEventListener('input', writeFromSwatch);
+            picker.addEventListener('change', writeFromSwatch);
         });
 
         const colorTextInputs = container.querySelectorAll('.color-text');
@@ -896,6 +917,10 @@ export class PropertyPanel {
                 const picker = textInput.previousElementSibling;
                 if (picker && picker.classList.contains('color-picker')) {
                     const hexColor = this.colorToHex(e.target.value);
+                    // null means the authored value (rgba/alpha/transparent/
+                    // unknown) cannot be shown in the swatch. Leave the swatch
+                    // alone rather than coercing it to a wrong color; the text
+                    // field remains the source of truth.
                     if (hexColor) {
                         picker.value = hexColor;
                     }
@@ -971,8 +996,19 @@ export class PropertyPanel {
         // so coerce duration fields to numbers (the generated component and the
         // manifest actionDurations expect numeric ms).
         const isDuration = property === 'slideInDuration' || property === 'slideOutDuration';
-        template.animationSettings[property] = isDuration ? Number(value) : value;
-        
+        if (isDuration) {
+            // An empty/blank field gives Number('') === 0, which would build a
+            // 0ms animation. Treat empty as "no change" so a mid-edit cleared
+            // field never overwrites the stored duration with 0; the value is
+            // recommitted once the user types a real number.
+            if (String(value).trim() === '') return;
+            const ms = Number(value);
+            if (!Number.isFinite(ms)) return;
+            template.animationSettings[property] = ms;
+        } else {
+            template.animationSettings[property] = value;
+        }
+
         // Save changes
         this.templateManager.saveToStorage();
         
@@ -1034,24 +1070,63 @@ export class PropertyPanel {
         }
     }
 
+    // Reduce an authored color value to the 6-digit #rrggbb the native
+    // <input type=color> swatch can hold. The swatch cannot represent alpha or
+    // named keywords, so anything it cannot show (rgba with alpha, transparent)
+    // returns null. Callers MUST treat null as "the swatch is only a preview;
+    // do not write its value back" so authored rgba/alpha/transparent is never
+    // clobbered. Accepts 3/4/6/8-digit hex (alpha digits are dropped for the
+    // swatch), rgb()/rgba() (alpha < 1 returns null), and a small named set.
     colorToHex(color) {
         if (!color) return null;
-        
-        // If already hex, return as is
-        if (color.startsWith('#')) {
-            return color.length === 7 ? color : null;
+
+        const value = String(color).trim();
+
+        // Hex: accept #rgb, #rgba, #rrggbb, #rrggbbaa. Expand short form and
+        // drop any alpha component for the swatch value.
+        if (value.startsWith('#')) {
+            const hex = value.slice(1);
+            if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+                const [r, g, b] = hex.split('');
+                return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+            }
+            if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+                // #rgba: expand rgb, ignore alpha.
+                const [r, g, b] = hex.split('');
+                return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+            }
+            if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+                return `#${hex.toLowerCase()}`;
+            }
+            if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+                // #rrggbbaa: drop alpha for the swatch.
+                return `#${hex.slice(0, 6).toLowerCase()}`;
+            }
+            return null;
         }
-        
-        // Handle rgb() format
-        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+
+        // rgb() and rgba(). Capture an optional alpha; if the color is
+        // meaningfully transparent (alpha < 1) the swatch cannot represent it,
+        // so return null and let the authored value stand.
+        const rgbMatch = value.match(
+            /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i
+        );
         if (rgbMatch) {
-            const r = parseInt(rgbMatch[1]);
-            const g = parseInt(rgbMatch[2]);
-            const b = parseInt(rgbMatch[3]);
-            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+            const alpha = rgbMatch[4] === undefined ? 1 : parseFloat(rgbMatch[4]);
+            if (Number.isFinite(alpha) && alpha < 1) {
+                return null;
+            }
+            const clamp = n => Math.max(0, Math.min(255, parseInt(n, 10)));
+            const r = clamp(rgbMatch[1]);
+            const g = clamp(rgbMatch[2]);
+            const b = clamp(rgbMatch[3]);
+            const hex = n => n.toString(16).padStart(2, '0');
+            return `#${hex(r)}${hex(g)}${hex(b)}`;
         }
-        
-        // Handle named colors (basic set)
+
+        // Named colors (basic set). 'transparent' has no opaque hex equivalent,
+        // so it is intentionally absent: the swatch falls back to its neutral
+        // default and the authored 'transparent' value is preserved.
         const namedColors = {
             'white': '#ffffff',
             'black': '#000000',
@@ -1060,10 +1135,9 @@ export class PropertyPanel {
             'blue': '#0000ff',
             'yellow': '#ffff00',
             'cyan': '#00ffff',
-            'magenta': '#ff00ff',
-            'transparent': '#000000'
+            'magenta': '#ff00ff'
         };
-        
-        return namedColors[color.toLowerCase()] || null;
+
+        return namedColors[value.toLowerCase()] || null;
     }
 }
