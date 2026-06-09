@@ -611,7 +611,12 @@ export class OGrafTemplate {
             const delay = Number(lane.delay) || 0;
             max = Math.max(max, delay + last);
         });
-        return max;
+        // Clamp to a finite, non-negative integer: the OGraf schema requires
+        // actionDurations[].duration to be an integer, and JSON.stringify turns
+        // a non-finite value into null (an invalid manifest). Advanced keyframe
+        // editing can introduce fractional or non-finite times, so guard here at
+        // the model layer rather than trusting every caller.
+        return Number.isFinite(max) ? Math.max(0, Math.round(max)) : 0;
     }
 
     // Refresh manifest.actionDurations from the current timeline. Published as
@@ -839,11 +844,11 @@ export default class ${className} extends HTMLElement {
         return out;
     }
 
-    // Build the WAAPI keyframe list + timing for one element lane, scaled to the
-    // total action duration so per-element lanes line up on one shared clock.
-    // Returns null when the lane is empty (element does not animate; it stays at
-    // its resting state). delay is honored as the WAAPI delay.
-    buildLaneEffect(lane, totalDuration) {
+    // Build the WAAPI keyframe list + timing for one element lane. Each element
+    // animates over its own span (its last keyframe time), offset by its delay;
+    // there is no shared-clock scaling across elements. Returns null when the
+    // lane is empty (element does not animate; it stays at its resting state).
+    buildLaneEffect(lane) {
         if (!lane || !Array.isArray(lane.keyframes) || lane.keyframes.length === 0) {
             return null;
         }
@@ -883,13 +888,12 @@ export default class ${className} extends HTMLElement {
             return;
         }
 
-        const total = this.computeActionTotal(action);
         const animations = [];
         nodes.forEach(node => {
             const id = node.getAttribute('data-element-id');
             const entry = id && timeline.elements ? timeline.elements[id] : null;
             const lane = entry ? (action === 'out' ? entry.out : entry.in) : null;
-            const effect = this.buildLaneEffect(lane, total);
+            const effect = this.buildLaneEffect(lane);
             if (!effect) return;
             const anim = node.animate(effect.keyframes, effect.timing);
             animations.push(anim);
