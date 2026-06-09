@@ -598,6 +598,94 @@ export class OGrafTemplate {
         return skipped;
     }
 
+    // ---- Advanced keyframe editing (used by the Timeline panel UI) ---------
+    // These are thin, testable mutations over a single lane. Each marks the
+    // lane custom (it is now hand-tuned, so a Simple preset must not silently
+    // overwrite it) and re-sorts by time. None of them touch actionDurations;
+    // the caller runs updateActionDurations() once after a batch of edits.
+
+    // Add a keyframe to a lane at time t (ms) capturing the given props. Returns
+    // the inserted keyframe. t is clamped to >= 0; props is { opacity?, tx?, ty?,
+    // scale? }; easing falls back to the lane's last frame easing or 'ease-out'.
+    addKeyframe(elementId, action, t, props = {}, easing) {
+        const lane = this.getLane(elementId, action);
+        const time = Math.max(0, Math.round(Number(t) || 0));
+        const css = OGrafTemplate.EASING_PRESETS.includes(easing)
+            ? easing
+            : (lane.keyframes[lane.keyframes.length - 1]?.easing || 'ease-out');
+        const cleanProps = {};
+        ['opacity', 'tx', 'ty', 'scale'].forEach(key => {
+            if (props[key] !== undefined && props[key] !== null && props[key] !== '') {
+                const num = Number(props[key]);
+                if (Number.isFinite(num)) cleanProps[key] = num;
+            }
+        });
+        const keyframe = { t: time, props: cleanProps, easing: css };
+        lane.keyframes.push(keyframe);
+        lane.custom = true;
+        this.normalizeLane(lane);
+        return keyframe;
+    }
+
+    // Remove the keyframe at index from a lane. Marks the lane custom.
+    removeKeyframe(elementId, action, index) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return false;
+        lane.keyframes.splice(index, 1);
+        lane.custom = true;
+        return true;
+    }
+
+    // Move a keyframe in time, clamped so it cannot cross its neighbours or go
+    // below 0. Returns the keyframe's new index (the lane is kept sorted), or -1
+    // if the index was invalid. Marks the lane custom.
+    moveKeyframe(elementId, action, index, newT) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return -1;
+        const sorted = lane.keyframes.slice().sort((a, b) => a.t - b.t);
+        const orderIndex = sorted.indexOf(lane.keyframes[index]);
+        const lower = orderIndex > 0 ? sorted[orderIndex - 1].t : 0;
+        const upper = orderIndex < sorted.length - 1 ? sorted[orderIndex + 1].t : Infinity;
+        const clamped = Math.max(lower, Math.min(upper, Math.max(0, Math.round(Number(newT) || 0))));
+        const kf = lane.keyframes[index];
+        kf.t = clamped;
+        lane.custom = true;
+        this.normalizeLane(lane);
+        return lane.keyframes.indexOf(kf);
+    }
+
+    // Set the editable props/easing of one keyframe. Marks the lane custom.
+    updateKeyframe(elementId, action, index, updates = {}) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return false;
+        const kf = lane.keyframes[index];
+        if (!kf.props) kf.props = {};
+        ['opacity', 'tx', 'ty', 'scale'].forEach(key => {
+            if (key in updates) {
+                const raw = updates[key];
+                if (raw === '' || raw === null || raw === undefined) {
+                    delete kf.props[key];
+                } else {
+                    const num = Number(raw);
+                    if (Number.isFinite(num)) kf.props[key] = num;
+                }
+            }
+        });
+        if (updates.easing && OGrafTemplate.EASING_PRESETS.includes(updates.easing)) {
+            kf.easing = updates.easing;
+        }
+        lane.custom = true;
+        return true;
+    }
+
+    // Set a lane's start delay (ms, >= 0). Marks the lane custom.
+    setLaneDelay(elementId, action, delayMs) {
+        const lane = this.getLane(elementId, action);
+        lane.delay = Math.max(0, Math.round(Number(delayMs) || 0));
+        lane.custom = true;
+        return lane.delay;
+    }
+
     // The real length (ms) of an action across all elements: max over every
     // lane of (delay + last keyframe time). This is what feeds actionDurations
     // so the renderer schedules play/stop honestly.

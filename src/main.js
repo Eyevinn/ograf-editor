@@ -4,6 +4,7 @@ import { VisualEditor } from './components/VisualEditor.js';
 import { PropertyPanel } from './components/PropertyPanel.js';
 import { PreviewEngine } from './components/PreviewEngine.js';
 import { CodeEditor } from './components/CodeEditor.js';
+import { TimelinePanel } from './components/TimelinePanel.js';
 import { escapeHtml } from './utils/escapeHtml.js';
 
 class OGrafEditor {
@@ -49,6 +50,15 @@ class OGrafEditor {
         const codeEditorContainer = document.querySelector('#code-editor');
         if (codeEditorContainer) {
             this.codeEditor = new CodeEditor(codeEditorContainer, this.templateManager);
+        }
+
+        // Initialize the bottom Timeline panel (Advanced keyframe authoring).
+        // It docks at the bottom of .editor-area as a flex sibling after
+        // .editor-content, and drives the same timeline model the sidebar's
+        // Simple presets edit.
+        const editorArea = document.querySelector('.editor-area');
+        if (editorArea && this.visualEditor) {
+            this.timelinePanel = new TimelinePanel(editorArea, this.templateManager, this.visualEditor);
         }
 
         // Setup cross-component communication
@@ -461,6 +471,9 @@ class OGrafEditor {
         }
         if (this.codeEditor) {
             this.codeEditor.render();
+        }
+        if (this.timelinePanel) {
+            this.timelinePanel.render();
         }
     }
 

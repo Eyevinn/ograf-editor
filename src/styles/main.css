@@ -184,8 +184,12 @@ body.panel-resizing {
 }
 
 .editor-content {
-    flex: 1;
+    flex: 1 1 0;
     position: relative;
+    /* Allow the content to shrink below its intrinsic height so the bottom
+       Timeline panel can claim its space without overlapping the absolutely
+       positioned tab panes. */
+    min-height: 0;
 }
 
 .editor-tab {

@@ -117,9 +117,12 @@ export class PropertyPanel {
             </div>
 
             <div class="property-section collapsible" data-section="animation">
-                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Animation Settings</button>
-                <p class="section-description">Configure how graphics animate when playing and stopping.</p>
-                
+                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Animation (quick presets)</button>
+                <p class="section-description">Pick how the graphic animates in and out. For fine control, use the Timeline panel at the bottom.</p>
+
+                ${this.renderPresetChips(template, animationSettings)}
+                ${this.renderCustomBadgeNote(template)}
+
                 <div class="property-group">
                     <label>Slide In Duration (ms)</label>
                     <input type="number" class="property-input" data-animation-property="slideInDuration" value="${animationSettings.slideInDuration}" min="100" max="3000" step="100">
@@ -178,6 +181,53 @@ export class PropertyPanel {
         this.setupDataInputEventListeners();
         this.restoreDataInputFocus();
         this.setupCollapsibleSections(container);
+    }
+
+    // Preset chips for the Simple path. Selecting a chip sets the preset for
+    // both the in and out lanes and regenerates the timeline keyframes through
+    // the shared model API (applyPresetToTimeline), honouring the custom-lock
+    // guardrail. "Slide" keeps the existing direction controls below; the other
+    // presets ignore direction.
+    renderPresetChips(template, animationSettings) {
+        const current = animationSettings.slideInPreset || 'slide';
+        const chips = [
+            { value: 'none', label: 'None' },
+            { value: 'fade', label: 'Fade' },
+            { value: 'slide', label: 'Slide' },
+            { value: 'pop', label: 'Pop' }
+        ];
+        const buttons = chips.map(chip => `
+            <button type="button" class="preset-chip ${current === chip.value ? 'active' : ''}"
+                    data-animation-preset="${chip.value}"
+                    aria-pressed="${current === chip.value}">${chip.label}</button>
+        `).join('');
+        return `
+            <div class="property-group">
+                <label id="preset-chips-label">Preset</label>
+                <div class="preset-chips" role="group" aria-labelledby="preset-chips-label">
+                    ${buttons}
+                </div>
+            </div>
+        `;
+    }
+
+    // Show which elements carry hand-tuned (custom) lanes, so the operator knows
+    // a Simple preset will not silently overwrite them.
+    renderCustomBadgeNote(template) {
+        const timeline = template.getTimeline();
+        const customIds = Object.entries(timeline.elements || {})
+            .filter(([, entry]) => (entry.in && entry.in.custom) || (entry.out && entry.out.custom))
+            .map(([id]) => id);
+        if (customIds.length === 0) return '';
+        const badges = customIds
+            .map(id => `<span class="custom-badge" title="Hand-tuned in the Timeline panel">${this.escapeHtml(id)} <strong>Custom</strong></span>`)
+            .join('');
+        return `
+            <div class="property-group custom-lane-note">
+                <p class="help-text">These elements have custom keyframes. A preset will ask before replacing them.</p>
+                <div class="custom-badges">${badges}</div>
+            </div>
+        `;
     }
 
     // Make the template-level sections collapsible so the narrow sidebar is not
@@ -388,6 +438,14 @@ export class PropertyPanel {
         templateInputs.forEach(input => {
             input.addEventListener('input', (e) => {
                 this.updateTemplateProperty(e.target.dataset.templateProperty, e.target.value);
+            });
+        });
+
+        // Preset chips: set both in/out preset and regenerate the timeline.
+        const presetChips = container.querySelectorAll('[data-animation-preset]');
+        presetChips.forEach(chip => {
+            chip.addEventListener('click', () => {
+                this.applyPreset(chip.dataset.animationPreset);
             });
         });
 
@@ -972,16 +1030,81 @@ export class PropertyPanel {
         // manifest actionDurations expect numeric ms).
         const isDuration = property === 'slideInDuration' || property === 'slideOutDuration';
         template.animationSettings[property] = isDuration ? Number(value) : value;
-        
+
+        // A duration/easing/direction change is a Simple-path edit: regenerate
+        // the timeline keyframes from the preset so the change actually takes
+        // effect (the animation is driven by the timeline, not these settings
+        // directly). The custom-lock guardrail leaves hand-tuned lanes alone;
+        // changing a non-preset setting on a custom-only template is a no-op on
+        // those lanes, which is the intended "do not clobber" behaviour.
+        const skipped = template.applyPresetToTimeline(false);
+        template.updateActionDurations();
+
         // Save changes
         this.templateManager.saveToStorage();
-        
+
         // Regenerate web component with new animation settings
         template.generateWebComponent();
-        
+
         // Reload the preview component to use new animation settings
         if (this.previewEngine) {
             this.previewEngine.reloadComponent();
+        }
+
+        // Refresh the bottom timeline panel so its lanes/durations stay in sync.
+        this.refreshTimelinePanel();
+
+        // If a setting changed but some lanes were skipped because they are
+        // custom, let the user know (and re-render to show the Custom badges).
+        if (skipped.length > 0) {
+            this.render();
+        }
+    }
+
+    // Apply a Simple preset (None / Fade / Slide / Pop) to every element's in
+    // and out lanes. This is the one-directional guardrail: if any lane is
+    // custom (hand-tuned in the Timeline panel), ask for explicit confirmation
+    // before replacing it. Confirm -> force-apply (clears custom). Cancel ->
+    // apply only to non-custom lanes, leaving the hand-tuned ones intact.
+    applyPreset(preset) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        if (!template.animationSettings) template.animationSettings = {};
+        template.animationSettings.slideInPreset = preset;
+        template.animationSettings.slideOutPreset = preset;
+
+        // Detect custom lanes up front so we can ask before clobbering them.
+        const timeline = template.getTimeline();
+        const hasCustom = Object.values(timeline.elements || {})
+            .some(entry => (entry.in && entry.in.custom) || (entry.out && entry.out.custom));
+
+        let force = false;
+        if (hasCustom) {
+            const presetLabel = preset.charAt(0).toUpperCase() + preset.slice(1);
+            force = confirm(
+                `Replace your custom keyframes with the ${presetLabel} preset? This cannot be undone.`
+            );
+        }
+
+        template.applyPresetToTimeline(force);
+        template.updateActionDurations();
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+        this.refreshTimelinePanel();
+        this.render();
+    }
+
+    // The bottom Timeline panel is owned by the app shell, not this panel. Reach
+    // it through the global app instance (the same channel used elsewhere) and
+    // re-render so its lanes/diamonds/durations reflect a Simple-path edit.
+    refreshTimelinePanel() {
+        const app = window.ografEditor;
+        if (app && app.timelinePanel) {
+            app.timelinePanel.render();
         }
     }
 

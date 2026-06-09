@@ -1,0 +1,390 @@
+/* GAP-B.2 Timeline panel — docked at the bottom of .editor-area as a flex
+   child after .editor-content. The panel sets its own height in JS; the
+   editor-content shrinks to make room (flex: 1 1 0 already lets it shrink). */
+
+.timeline-panel {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 36px;
+    background-color: #232323;
+    border-top: 1px solid #404040;
+    color: #e0e0e0;
+    overflow: hidden;
+}
+
+/* The top drag handle (reuses .panel-resizer visuals from main.css). */
+.timeline-resizer {
+    height: 6px;
+    flex-shrink: 0;
+    cursor: row-resize;
+}
+
+.timeline-panel.collapsed .timeline-resizer {
+    cursor: default;
+    pointer-events: none;
+    opacity: 0.4;
+}
+
+.timeline-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 30px;
+    flex-shrink: 0;
+    padding: 0 12px;
+    background-color: #2d2d2d;
+}
+
+.timeline-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: #e0e0e0;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 4px 2px;
+}
+
+.timeline-toggle:hover { color: #ffffff; }
+
+.timeline-toggle:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
+.timeline-caret {
+    font-size: 0.7rem;
+    color: #909090;
+}
+
+.timeline-summary {
+    color: #b0b0b0;
+    font-size: 0.8rem;
+}
+
+.timeline-transport {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+}
+
+.timeline-btn {
+    padding: 4px 10px;
+    font-size: 0.8rem;
+}
+
+.timeline-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 12px 12px;
+}
+
+.timeline-body[hidden] { display: none; }
+
+.timeline-empty,
+.timeline-lane-empty {
+    color: #777;
+    font-size: 0.8rem;
+    font-style: italic;
+}
+
+.timeline-lane-empty { padding-left: 6px; }
+
+/* Grid / ruler / tracks */
+.timeline-grid {
+    display: flex;
+    flex-direction: column;
+}
+
+.timeline-ruler-row,
+.timeline-track {
+    display: flex;
+    align-items: stretch;
+}
+
+.timeline-track-label {
+    flex: 0 0 120px;
+    width: 120px;
+    padding: 4px 8px;
+    font-size: 0.78rem;
+    color: #c0c0c0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-right: 1px solid #383838;
+}
+
+.timeline-ruler-spacer { border-right: 1px solid #383838; }
+
+.timeline-lanes-area {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.timeline-ruler {
+    position: relative;
+    height: 18px;
+    border-bottom: 1px solid #383838;
+}
+
+.timeline-tick {
+    position: absolute;
+    top: 2px;
+    font-size: 0.65rem;
+    color: #808080;
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.timeline-tick::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 14px;
+    width: 1px;
+    height: 6px;
+    background-color: #404040;
+}
+
+/* Playhead */
+.timeline-playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background-color: #ff7b00;
+    cursor: ew-resize;
+    z-index: 5;
+}
+
+.timeline-playhead::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -4px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #ff7b00;
+}
+
+.timeline-playhead:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 1px;
+}
+
+/* Tracks */
+.timeline-track {
+    border-bottom: 1px solid #2c2c2c;
+}
+
+.timeline-track.selected {
+    background-color: rgba(0, 122, 204, 0.12);
+}
+
+.timeline-track.selected .timeline-track-label {
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.timeline-lane {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 4px;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.timeline-lane:last-child { border-bottom: none; }
+
+.timeline-lane.active {
+    background-color: rgba(0, 122, 204, 0.18);
+}
+
+.timeline-lane-tag {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    color: #909090;
+    width: 64px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.timeline-lane-track {
+    position: relative;
+    height: 100%;
+    flex: 1;
+}
+
+/* Keyframe diamonds */
+.timeline-kf {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    transform: translateY(-50%) rotate(45deg);
+    background-color: #4fc1ff;
+    border: 1px solid #1e1e1e;
+    padding: 0;
+    cursor: grab;
+}
+
+.timeline-kf:hover { background-color: #7fd3ff; }
+
+.timeline-kf.selected {
+    background-color: #ffd24f;
+    box-shadow: 0 0 0 2px rgba(255, 210, 79, 0.4);
+}
+
+.timeline-kf:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 1px;
+}
+
+/* Custom badge (Advanced lane that is hand-tuned) */
+.timeline-custom-badge {
+    font-size: 0.6rem;
+    color: #ffd24f;
+    border: 1px solid #6a5a1f;
+    border-radius: 3px;
+    padding: 0 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+/* Inspector */
+.timeline-inspector {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #383838;
+}
+
+.timeline-inspector-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.timeline-inspector-lane {
+    font-size: 0.8rem;
+    color: #c0c0c0;
+}
+
+.timeline-inspector-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: flex-end;
+}
+
+.timeline-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.72rem;
+    color: #b0b0b0;
+}
+
+.timeline-field input,
+.timeline-field select {
+    width: 90px;
+    padding: 5px 6px;
+    border: 1px solid #404040;
+    border-radius: 4px;
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    font-size: 0.8rem;
+}
+
+.timeline-field input:focus,
+.timeline-field select:focus {
+    outline: none;
+    border-color: #007acc;
+}
+
+.timeline-field input:disabled,
+.timeline-field select:disabled {
+    opacity: 0.45;
+}
+
+.timeline-remove-kf { align-self: flex-end; }
+
+/* Respect prefers-reduced-motion for the editor's own UI transitions. */
+@media (prefers-reduced-motion: reduce) {
+    .timeline-caret,
+    .timeline-kf {
+        transition: none !important;
+    }
+}
+
+/* ---- Simple-path preset chips + custom badges (sidebar) ---------------- */
+.preset-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.preset-chip {
+    padding: 5px 12px;
+    border: 1px solid #505050;
+    border-radius: 14px;
+    background-color: #333333;
+    color: #d0d0d0;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.preset-chip:hover {
+    background-color: #404040;
+    border-color: #007acc;
+}
+
+.preset-chip.active {
+    background-color: #007acc;
+    border-color: #007acc;
+    color: #ffffff;
+}
+
+.preset-chip:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
+.custom-lane-note .custom-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.custom-badge {
+    font-size: 0.72rem;
+    color: #c0c0c0;
+    background-color: #2c2920;
+    border: 1px solid #6a5a1f;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+.custom-badge strong {
+    color: #ffd24f;
+    text-transform: uppercase;
+    font-size: 0.62rem;
+    letter-spacing: 0.4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .preset-chip { transition: none !important; }
+}
