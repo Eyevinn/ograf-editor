@@ -295,18 +295,24 @@ class OGrafEditor {
     }
 
     setupComponentListeners() {
+        const visualEditorContainer = document.querySelector('#visual-editor');
+        if (!visualEditorContainer) return;
+
         // Listen for element updates from visual editor to refresh preview
-        if (this.visualEditor && this.previewEngine) {
-            const visualEditorContainer = document.querySelector('#visual-editor');
-            if (visualEditorContainer) {
-                visualEditorContainer.addEventListener('elementUpdated', () => {
-                    // Update preview if it's currently visible or active
-                    if (this.currentView === 'preview' || this.previewEngine.isPlaying) {
-                        this.previewEngine.update();
-                    }
-                });
-            }
+        if (this.previewEngine) {
+            visualEditorContainer.addEventListener('elementUpdated', () => {
+                // Update preview if it's currently visible or active
+                if (this.currentView === 'preview' || this.previewEngine.isPlaying) {
+                    this.previewEngine.update();
+                }
+            });
         }
+
+        // Refresh the sidebar list when the template name or description is
+        // edited in the property panel (the list shows both).
+        visualEditorContainer.addEventListener('templateMetaUpdated', () => {
+            this.updateTemplateList();
+        });
     }
 
     switchView(viewName) {
@@ -371,7 +377,12 @@ class OGrafEditor {
             const template = this.templateManager.createTemplate(type, id, name, description);
             this.hideNewTemplateModal();
             this.updateTemplateList();
-            this.selectTemplate(id);
+            // Select by the template's actual (slugified) id, not the raw form
+            // input. createTemplate slugifies the id (e.g. "My Title" ->
+            // "my-title"), so selecting by the raw id misses the Map key,
+            // setCurrentTemplate fails, and the editor views never refresh to
+            // show the new template until it is clicked manually.
+            this.selectTemplate(template.manifest.id);
             this.showSuccessMessage(`Template "${name}" created successfully`);
         } catch (error) {
             alert(`Error creating template: ${error.message}`);

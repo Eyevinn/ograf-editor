@@ -788,13 +788,26 @@ export default class ${className} extends HTMLElement {
         return {
             manifest: this.manifest,
             elements: this.elements,
-            webComponent: this.webComponent
+            webComponent: this.webComponent,
+            // Persist animation settings so the operator's slide direction,
+            // duration, and easing survive a reload. Without this they round-trip
+            // to nothing and reset to the constructor defaults on every load.
+            animationSettings: this.animationSettings
         };
     }
 
     static fromJSON(json) {
         const template = new OGrafTemplate();
         template.manifest = json.manifest;
+        // Restore persisted animation settings, merged over the constructor
+        // defaults so a partial or older saved object keeps valid values for any
+        // field it omits.
+        if (json.animationSettings) {
+            template.animationSettings = {
+                ...template.animationSettings,
+                ...json.animationSettings
+            };
+        }
         // Sanitize each element id before assignment: it is interpolated into an
         // `element-<id>` class attribute and the generateElementStyles `<style>`
         // block, so a crafted id from an imported file (e.g. `" onmouseover=...`)
