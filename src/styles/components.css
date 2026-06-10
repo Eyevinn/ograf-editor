@@ -165,8 +165,8 @@
 }
 
 .code-tab-btn.active {
-    color: #ffffff;
-    border-bottom-color: #007acc;
+    color: #4dc9ff;
+    border-bottom-color: #4dc9ff;
 }
 
 .code-content {
@@ -269,8 +269,10 @@
 }
 
 .template-list-container {
-    max-height: 300px;
-    overflow-y: auto;
+    /* The panel's .template-list-content is the single scroll area; do not add a
+       second nested scrollbar here. */
+    display: flex;
+    flex-direction: column;
 }
 
 .template-item {
@@ -529,7 +531,7 @@
     padding: 4px 0;
     background: none;
     border: none;
-    color: #e0e0e0;
+    color: #4dc9ff;
     font-size: 0.95rem;
     font-weight: 600;
     text-align: left;

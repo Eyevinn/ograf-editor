@@ -1,5 +1,6 @@
 import { saveAs } from 'file-saver';
 import { OGrafTemplate } from '../models/OGrafTemplate.js';
+import { createZip, readZip } from '../utils/zip.js';
 
 export class ExportImportService {
     constructor(templateManager) {
@@ -34,22 +35,13 @@ export class ExportImportService {
     }
 
     /**
-     * Export template as ZIP file
+     * Export the OGraf Graphic as a single .zip bundle containing the spec files
+     * (the <id>.ograf.json manifest and the .mjs component). `files` is the
+     * { filename: content } map from TemplateManager.exportTemplate.
      */
     async exportAsZip(files, templateId) {
-        // For basic implementation without JSZip dependency
-        // We'll create a simple tar-like structure in a text file
-        const exportData = {
-            templateId: templateId,
-            exportDate: new Date().toISOString(),
-            files: files
-        };
-
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-            type: 'application/json'
-        });
-        
-        saveAs(blob, `${templateId}-ograf-export.json`);
+        const blob = createZip(files);
+        saveAs(blob, `${templateId}.ograf.zip`);
         return blob;
     }
 
@@ -89,16 +81,102 @@ export class ExportImportService {
      */
     async importTemplate(file) {
         try {
-            const content = await this.readFile(file);
-            
-            if (file.name.endsWith('.json')) {
-                return this.importFromJSON(content);
-            } else {
-                throw new Error('Unsupported file format. Please upload a JSON file.');
+            const name = (file.name || '').toLowerCase();
+            const isZip = name.endsWith('.zip') || file.type === 'application/zip';
+            if (isZip) {
+                return await this.importFromZip(file);
             }
+
+            const content = await this.readFile(file);
+            if (name.endsWith('.json')) {
+                // Handles both a raw <id>.ograf.json manifest and the editor JSON
+                // bundle (importFromJSON detects the shape).
+                return this.importFromJSON(content);
+            }
+            if (name.endsWith('.mjs') || name.endsWith('.js')) {
+                throw new Error('Import the .ograf.json manifest or the .ograf.zip, not the component module on its own.');
+            }
+            throw new Error('Unsupported file. Import a .ograf.zip bundle or a .ograf.json manifest.');
         } catch (error) {
             throw new Error(`Import failed: ${error.message}`);
         }
+    }
+
+    // Import several files chosen together: the .ograf.json manifest plus its
+    // .mjs component (or a .zip among the selection). Mirrors the zip path, the
+    // manifest carries the authored elements/timeline; the .mjs is kept verbatim.
+    // Choose the component file from a list of names using the manifest's "main"
+    // field (matched by exact name or basename), falling back to the first
+    // .mjs/.js. Reading "main" avoids grabbing a lib/*.js by mistake.
+    pickComponentName(names, mainField) {
+        if (mainField) {
+            const m = String(mainField).toLowerCase();
+            const hit = names.find(n => {
+                const ln = n.toLowerCase();
+                return ln === m || ln.endsWith('/' + m) || ln.split('/').pop() === m;
+            });
+            if (hit) return hit;
+        }
+        return names.find(n => /\.(mjs|js)$/i.test(n));
+    }
+
+    async importFromFiles(files) {
+        const list = Array.from(files);
+        const byExt = (re) => list.find(f => re.test((f.name || '').toLowerCase()));
+
+        const zip = byExt(/\.zip$/);
+        if (zip) return this.importFromZip(zip);
+
+        const manifestFile = byExt(/\.ograf\.json$/) || byExt(/\.json$/);
+        if (!manifestFile) {
+            throw new Error('Select the .ograf.json manifest (optionally with its .mjs component).');
+        }
+        const manifestText = await this.readFile(manifestFile);
+        const template = this.importFromJSON(manifestText);
+
+        let mainField;
+        try { mainField = JSON.parse(manifestText).main; } catch (e) { /* ignore */ }
+        const compName = this.pickComponentName(list.map(f => f.name || ''), mainField);
+        const compFile = compName ? list.find(f => (f.name || '') === compName) : null;
+        if (compFile) {
+            template.webComponent = await this.readFile(compFile);
+            this.templateManager.saveToStorage();
+        }
+        return template;
+    }
+
+    // Import the .ograf.zip we export: unzip, read the <id>.ograf.json manifest
+    // (which carries the authored elements/timeline under v_ vendor keys), and
+    // keep the exact .mjs component if present.
+    async importFromZip(file) {
+        const buf = await this.readFileAsArrayBuffer(file);
+        const entries = await readZip(buf);
+        const names = Object.keys(entries);
+        const manifestName = names.find(n => n.toLowerCase().endsWith('.ograf.json'))
+            || names.find(n => n.toLowerCase().endsWith('.json'));
+        if (!manifestName) {
+            throw new Error('No .ograf.json manifest found in the zip.');
+        }
+        const manifestText = entries[manifestName];
+        const template = this.importFromJSON(manifestText);
+
+        let mainField;
+        try { mainField = JSON.parse(manifestText).main; } catch (e) { /* ignore */ }
+        const compName = this.pickComponentName(names, mainField);
+        if (compName && entries[compName]) {
+            template.webComponent = entries[compName];
+            this.templateManager.saveToStorage();
+        }
+        return template;
+    }
+
+    readFileAsArrayBuffer(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsArrayBuffer(file);
+        });
     }
 
     /**
@@ -129,22 +207,35 @@ export class ExportImportService {
      * Import from editor template format
      */
     importEditorTemplate(templateData) {
+        // The editor bundle carries elements/timeline as top-level fields. Fold
+        // them into the manifest under the vendor keys so the manifest-based
+        // importer recognizes this as an editor-made template (it would otherwise
+        // refuse a manifest with no v_ografEditorElements as a foreign graphic),
+        // and so it restores + id-sanitizes the elements and restores the timeline.
+        const manifest = { ...(templateData.manifest || {}) };
+        manifest.v_ografEditorElements = Array.isArray(templateData.elements) ? templateData.elements : [];
+        if (templateData.timeline !== undefined) {
+            manifest.v_ografEditorTimeline = templateData.timeline;
+        }
+
         const template = this.templateManager.importTemplate(
-            JSON.stringify(templateData.manifest),
+            JSON.stringify(manifest),
             templateData.webComponent
         );
-        
-        // Restore elements if available. Sanitize each element id: it is spliced
-        // into an `element-<id>` class attribute and a generated `<style>` block,
-        // so an imported id like `" onmouseover=...` could otherwise break out of
-        // that context. slugifyId restricts it to [a-z0-9-].
-        if (templateData.elements) {
+
+        // Restore + id-sanitize here too, so the result is correct regardless of
+        // the manager implementation. Element ids are spliced into an
+        // `element-<id>` class attribute and a generated <style> block, so
+        // slugifyId restricts them to [a-z0-9-].
+        if (Array.isArray(templateData.elements)) {
             template.elements = templateData.elements.map(element => ({
                 ...element,
                 id: OGrafTemplate.slugifyId(element.id)
             }));
         }
-        
+        if (templateData.timeline !== undefined) {
+            template.timeline = templateData.timeline;
+        }
         return template;
     }
 
@@ -354,76 +445,6 @@ customElements.define('${safeId}-graphic', ${className});
             
             reader.readAsText(file);
         });
-    }
-
-    /**
-     * Export multiple templates as bundle
-     */
-    async exportTemplateBundle(templateIds, bundleName = 'ograf-templates') {
-        const bundle = {
-            format: 'ograf-editor-bundle',
-            version: '1.0.0',
-            exportDate: new Date().toISOString(),
-            bundleName: bundleName,
-            templates: {}
-        };
-
-        for (const templateId of templateIds) {
-            const template = this.templateManager.getTemplate(templateId);
-            if (template) {
-                bundle.templates[templateId] = template.toJSON();
-            }
-        }
-
-        const blob = new Blob([JSON.stringify(bundle, null, 2)], {
-            type: 'application/json'
-        });
-        
-        saveAs(blob, `${bundleName}-bundle.json`);
-        return blob;
-    }
-
-    /**
-     * Import template bundle
-     */
-    async importTemplateBundle(file) {
-        try {
-            const content = await this.readFile(file);
-            const bundle = JSON.parse(content);
-            
-            if (bundle.format !== 'ograf-editor-bundle') {
-                throw new Error('Invalid bundle format');
-            }
-
-            const importedTemplates = [];
-            
-            for (const [templateId, templateData] of Object.entries(bundle.templates)) {
-                try {
-                    // Check if template already exists
-                    if (this.templateManager.getTemplate(templateId)) {
-                        const shouldReplace = confirm(
-                            `Template "${templateId}" already exists. Do you want to replace it?`
-                        );
-                        if (!shouldReplace) continue;
-                        
-                        // Delete existing template
-                        this.templateManager.deleteTemplate(templateId);
-                    }
-                    
-                    const template = this.importEditorTemplate(templateData);
-                    importedTemplates.push(template);
-                } catch (error) {
-                }
-            }
-
-            return {
-                success: true,
-                importedCount: importedTemplates.length,
-                templates: importedTemplates
-            };
-        } catch (error) {
-            throw new Error(`Bundle import failed: ${error.message}`);
-        }
     }
 
     /**

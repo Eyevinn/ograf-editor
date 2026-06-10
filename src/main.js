@@ -4,6 +4,7 @@ import { VisualEditor } from './components/VisualEditor.js';
 import { PropertyPanel } from './components/PropertyPanel.js';
 import { PreviewEngine } from './components/PreviewEngine.js';
 import { CodeEditor } from './components/CodeEditor.js';
+import { TimelinePanel } from './components/TimelinePanel.js';
 import { escapeHtml } from './utils/escapeHtml.js';
 
 class OGrafEditor {
@@ -49,6 +50,21 @@ class OGrafEditor {
         const codeEditorContainer = document.querySelector('#code-editor');
         if (codeEditorContainer) {
             this.codeEditor = new CodeEditor(codeEditorContainer, this.templateManager);
+        }
+
+        // Initialize the bottom Timeline panel (Advanced keyframe authoring).
+        // It docks at the bottom of .editor-area as a flex sibling after
+        // .editor-content, and drives the same timeline model the sidebar's
+        // Simple presets edit.
+        const editorArea = document.querySelector('.editor-area');
+        if (editorArea && this.visualEditor) {
+            this.timelinePanel = new TimelinePanel(editorArea, this.templateManager, this.visualEditor);
+            // Connect the timeline panel to the preview engine so a keyframe edit
+            // refreshes the live preview (recreate + re-play) without a manual
+            // Stop/Play, the same way PropertyPanel's Simple-path edits do.
+            if (this.previewEngine) {
+                this.timelinePanel.setPreviewEngine(this.previewEngine);
+            }
         }
 
         // Setup cross-component communication
@@ -328,6 +344,13 @@ class OGrafEditor {
             tab.classList.toggle('active', tab.id === `${viewName}-editor`);
         });
 
+        // The Preview tab has its own Play/Stop transport, so hide the bottom
+        // Timeline panel there to avoid two play/stop controls driving two
+        // different surfaces. It returns in the Visual/Code tabs.
+        if (this.timelinePanel) {
+            this.timelinePanel.setVisible(viewName !== 'preview');
+        }
+
         // Update components based on view
         if (viewName === 'visual' && this.visualEditor) {
             this.visualEditor.render();
@@ -462,20 +485,28 @@ class OGrafEditor {
         if (this.codeEditor) {
             this.codeEditor.render();
         }
+        if (this.timelinePanel) {
+            this.timelinePanel.render();
+        }
     }
 
     showImportDialog() {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json';
+        // Accept the exported .ograf.zip bundle, a single .ograf.json manifest,
+        // or the manifest + .mjs selected together as separate files.
+        input.accept = '.zip,.json,.ograf.json,.mjs,.js';
+        input.multiple = true;
         input.style.display = 'none';
-        
+
         input.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+            const files = Array.from(e.target.files || []);
+            if (!files.length) return;
 
             try {
-                const template = await this.exportImportService.importTemplate(file);
+                const template = files.length > 1
+                    ? await this.exportImportService.importFromFiles(files)
+                    : await this.exportImportService.importTemplate(files[0]);
                 this.updateTemplateList();
                 this.selectTemplate(template.manifest.id);
                 this.showSuccessMessage(`Template "${template.manifest.name}" imported successfully`);
@@ -497,8 +528,11 @@ class OGrafEditor {
         }
 
         try {
-            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'json');
-            this.showSuccessMessage('Template exported successfully');
+            // Export a single .zip bundling the spec-compliant OGraf package: the
+            // manifest (<id>.ograf.json, the spec requires the .ograf.json suffix)
+            // and the .mjs component the manifest's "main" references.
+            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'zip');
+            this.showSuccessMessage('Exported <id>.ograf.zip (manifest + .mjs component)');
         } catch (error) {
             alert(`Export failed: ${error.message}`);
         }

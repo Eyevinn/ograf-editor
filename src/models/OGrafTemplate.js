@@ -23,16 +23,40 @@ export class OGrafTemplate {
         this.webComponent = null;
 
         // Default animation settings so a freshly created template animates.
-        // The generated component also defaults per field defensively, so a
-        // partial or empty object never produces invalid CSS.
+        // These are the inputs to the "Simple (quick presets)" path: picking a
+        // preset + duration + easing GENERATES keyframes into the timeline below.
+        // The animation itself is driven by the timeline (v_ografEditorTimeline),
+        // not by these settings directly; they are retained as the preset state.
         this.animationSettings = {
+            slideInPreset: 'slide',
             slideInDuration: 500,
             slideInType: 'ease-out',
             slideInDirection: 'left',
+            slideOutPreset: 'slide',
             slideOutDuration: 500,
             slideOutType: 'ease-in',
             slideOutDirection: 'left'
         };
+
+        // The authoritative animation data. Stored on the manifest under the
+        // vendor key v_ografEditorTimeline (additionalProperties:false safe), and
+        // the single source the generated component animates from via the Web
+        // Animations API. Shape:
+        //   { version:1, elements: { "<id>": { in:{delay, custom, keyframes:[]},
+        //                                       out:{delay, custom, keyframes:[]} } } }
+        // keyframe = { t:<ms>, props:{opacity?, tx?, ty?, scale?}, easing:'<css>' }
+        // An empty keyframes array means the element does not animate for that
+        // action (it snaps to its resting state). `custom` is the Simple/Advanced
+        // guardrail flag: once a lane is hand-edited in Advanced it is `true`, and
+        // re-applying a Simple preset to it requires explicit confirmation.
+        this.manifest.v_ografEditorTimeline = { version: 1, elements: {} };
+    }
+
+    // Named easing presets the timeline UI offers, stored as the CSS easing
+    // string the Web Animations API understands. cubic-bezier curve editing is
+    // deferred (presets only for v1).
+    static get EASING_PRESETS() {
+        return ['linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out'];
     }
 
     // Turn arbitrary user input into a safe OGraf id: lowercase, hyphen-separated,
@@ -75,7 +99,12 @@ export class OGrafTemplate {
             default:
                 template.setupCustom();
         }
-        
+
+        // Seed the timeline from the default Simple slide preset so a freshly
+        // created template animates immediately, and publish honest durations.
+        template.applyPresetToTimeline(true);
+        template.updateActionDurations();
+
         return template;
     }
 
@@ -373,18 +402,106 @@ export class OGrafTemplate {
     }
 
     addElement(element) {
+        // Date.now() alone collides for elements added within the same
+        // millisecond, producing duplicate ids that break per-element style and
+        // animation lookup. Combine the timestamp with a random suffix and then
+        // guarantee uniqueness against existing ids.
+        const existingIds = new Set(this.elements.map(el => el.id));
+        let id = `element_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        while (existingIds.has(id)) {
+            id = `element_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        }
         this.elements.push({
-            id: `element_${Date.now()}`,
+            id,
             ...element
         });
     }
 
     removeElement(elementId) {
         this.elements = this.elements.filter(el => el.id !== elementId);
+        // Drop any timeline lanes for the removed element so the manifest does
+        // not carry animation data for an element that no longer exists.
+        const timeline = this.manifest.v_ografEditorTimeline;
+        if (timeline && timeline.elements && timeline.elements[elementId]) {
+            delete timeline.elements[elementId];
+        }
     }
 
     getElementById(elementId) {
         return this.elements.find(el => el.id === elementId);
+    }
+
+    // Rename an element's id atomically. The id is used as a CSS class segment
+    // (`.element-<id>` in generateElementStyles), as the data-element-id keying
+    // the per-element animation lane lookup at play/stop time, and as the
+    // timeline-lane key in v_ografEditorTimeline.elements[<id>]. It is NOT a data
+    // token, so {{...}} content (data-input keys, a separate namespace) is left
+    // untouched.
+    //
+    // Validation here is the model-layer guard; the panel validates first for an
+    // inline error, but the model is the safe boundary for any caller. Returns
+    //   { ok: true, id }
+    //   { ok: false, reason: 'empty' | 'invalid' | 'duplicate' | 'missing' }
+    // On a no-op rename (newId equals oldId after slugify) returns ok with the
+    // unchanged id. On success the timeline lane is migrated in place, the styles
+    // and web component are regenerated, and the new id is returned.
+    renameElementId(oldId, rawNewId) {
+        const element = this.getElementById(oldId);
+        if (!element) {
+            return { ok: false, reason: 'missing' };
+        }
+
+        const trimmed = String(rawNewId == null ? '' : rawNewId).trim();
+        if (trimmed === '') {
+            return { ok: false, reason: 'empty' };
+        }
+
+        // slug-safe: lowercase letters, digits, hyphens. We require the input to
+        // already be slug-safe rather than silently coercing, so "Lower Third"
+        // is rejected with a clear error instead of becoming "lower-third"
+        // behind the user's back. (The panel may auto-slugify before calling.)
+        if (OGrafTemplate.slugifyId(trimmed) !== trimmed || !/^[a-z0-9-]+$/.test(trimmed)) {
+            return { ok: false, reason: 'invalid' };
+        }
+
+        const newId = trimmed;
+
+        // No-op: nothing to migrate, but report success so callers can treat it
+        // as "committed".
+        if (newId === oldId) {
+            return { ok: true, id: oldId };
+        }
+
+        // Unique among the template's elements.
+        if (this.elements.some(el => el.id === newId)) {
+            return { ok: false, reason: 'duplicate' };
+        }
+
+        // 1. Update the element's id.
+        element.id = newId;
+
+        // 2. Migrate the timeline lane, preserving key order so the timeline
+        //    track list does not reshuffle. Only moves an existing lane; a
+        //    missing lane is left missing (getElementTimeline lazily creates one
+        //    later if needed).
+        const timeline = this.getTimeline();
+        if (timeline.elements[oldId] !== undefined) {
+            const rebuilt = {};
+            for (const key of Object.keys(timeline.elements)) {
+                if (key === oldId) {
+                    rebuilt[newId] = timeline.elements[oldId];
+                } else {
+                    rebuilt[key] = timeline.elements[key];
+                }
+            }
+            timeline.elements = rebuilt;
+        }
+
+        // 3. Regenerate styles + web component so `.element-<id>`,
+        //    data-element-id, and the serialized timeline all reflect the new id.
+        this.generateWebComponent();
+
+        return { ok: true, id: newId };
     }
 
     updateElement(elementId, updates) {
@@ -394,23 +511,334 @@ export class OGrafTemplate {
         }
     }
 
+    // ---- Timeline (v_ografEditorTimeline) ----------------------------------
+
+    // Always return a well-formed timeline object, repairing older or partial
+    // shapes (e.g. an imported template without a timeline).
+    getTimeline() {
+        let timeline = this.manifest.v_ografEditorTimeline;
+        if (!timeline || typeof timeline !== 'object') {
+            timeline = { version: 1, elements: {} };
+            this.manifest.v_ografEditorTimeline = timeline;
+        }
+        if (!timeline.elements || typeof timeline.elements !== 'object') {
+            timeline.elements = {};
+        }
+        if (timeline.version !== 1) {
+            timeline.version = 1;
+        }
+        return timeline;
+    }
+
+    // Return (creating if needed) the { in, out } lanes for one element.
+    getElementTimeline(elementId) {
+        const timeline = this.getTimeline();
+        if (!timeline.elements[elementId]) {
+            timeline.elements[elementId] = {
+                in: { delay: 0, custom: false, keyframes: [] },
+                out: { delay: 0, custom: false, keyframes: [] }
+            };
+        }
+        const entry = timeline.elements[elementId];
+        if (!entry.in) entry.in = { delay: 0, custom: false, keyframes: [] };
+        if (!entry.out) entry.out = { delay: 0, custom: false, keyframes: [] };
+        return entry;
+    }
+
+    // Return a single lane ('in' | 'out') for an element.
+    getLane(elementId, action) {
+        const entry = this.getElementTimeline(elementId);
+        return action === 'out' ? entry.out : entry.in;
+    }
+
+    // Mark a lane as hand-tuned in Advanced mode. Once custom, re-applying a
+    // Simple preset to it requires explicit confirmation (handled in the UI).
+    markLaneCustom(elementId, action) {
+        const lane = this.getLane(elementId, action);
+        lane.custom = true;
+    }
+
+    // Sort a lane's keyframes by time and guarantee a t:0 frame exists so the
+    // generated WAAPI keyframes always start from a defined offset.
+    normalizeLane(lane) {
+        if (!Array.isArray(lane.keyframes)) lane.keyframes = [];
+        lane.keyframes.sort((a, b) => a.t - b.t);
+        return lane;
+    }
+
+    // Build keyframes for a Simple preset on one element + action. tx/ty are
+    // offsets from the element's resting position; the off-stage distance is
+    // derived from the stage size and the element's bounds so the graphic
+    // travels fully on/off screen as a unit (mirrors the old slide behaviour).
+    // Returns { delay, keyframes } for the lane.
+    buildPresetLane(element, action, preset, durationMs, easing, direction) {
+        const duration = Number.isFinite(Number(durationMs)) && Number(durationMs) >= 0
+            ? Number(durationMs)
+            : 500;
+        const css = OGrafTemplate.EASING_PRESETS.includes(easing) ? easing : 'ease-out';
+
+        // Off-stage offset for a slide, relative to the element's resting x/y.
+        const stageW = 1920;
+        const stageH = 1080;
+        const x = Number(element.x) || 0;
+        const y = Number(element.y) || 0;
+        const w = Number(element.width) || 0;
+        const h = Number(element.height) || 0;
+        const offsetFor = (dir) => {
+            switch (dir) {
+                case 'right': return { tx: stageW - x, ty: 0 };
+                case 'top': return { tx: 0, ty: -(y + h) };
+                case 'bottom': return { tx: 0, ty: stageH - y };
+                case 'left':
+                default: return { tx: -(x + w), ty: 0 };
+            }
+        };
+
+        let keyframes;
+        switch (preset) {
+            case 'none':
+                keyframes = [];
+                break;
+            case 'fade':
+                keyframes = action === 'out'
+                    ? [
+                        { t: 0, props: { opacity: 1 }, easing: css },
+                        { t: duration, props: { opacity: 0 }, easing: css }
+                    ]
+                    : [
+                        { t: 0, props: { opacity: 0 }, easing: css },
+                        { t: duration, props: { opacity: 1 }, easing: css }
+                    ];
+                break;
+            case 'pop':
+                keyframes = action === 'out'
+                    ? [
+                        { t: 0, props: { scale: 1, opacity: 1 }, easing: css },
+                        { t: duration, props: { scale: 0.6, opacity: 0 }, easing: css }
+                    ]
+                    : [
+                        { t: 0, props: { scale: 0.6, opacity: 0 }, easing: css },
+                        { t: duration, props: { scale: 1, opacity: 1 }, easing: css }
+                    ];
+                break;
+            case 'slide':
+            default: {
+                const off = offsetFor(direction || 'left');
+                keyframes = action === 'out'
+                    ? [
+                        { t: 0, props: { tx: 0, ty: 0 }, easing: css },
+                        { t: duration, props: { tx: off.tx, ty: off.ty }, easing: css }
+                    ]
+                    : [
+                        { t: 0, props: { tx: off.tx, ty: off.ty }, easing: css },
+                        { t: duration, props: { tx: 0, ty: 0 }, easing: css }
+                    ];
+                break;
+            }
+        }
+        return { delay: 0, keyframes };
+    }
+
+    // Apply a Simple preset across every element for both actions, generating
+    // keyframes into the timeline. Respects the custom-lock guardrail: a lane
+    // that has been hand-edited in Advanced (custom:true) is left untouched
+    // unless force=true (the UI sets force after an explicit confirm). Returns
+    // the list of element ids whose lanes were skipped because they were custom.
+    applyPresetToTimeline(force = false) {
+        const s = this.animationSettings || {};
+        const skipped = [];
+        this.elements.forEach(element => {
+            const entry = this.getElementTimeline(element.id);
+            const lanes = [
+                {
+                    key: 'in', lane: entry.in,
+                    preset: s.slideInPreset || 'slide',
+                    duration: s.slideInDuration, easing: s.slideInType,
+                    direction: s.slideInDirection
+                },
+                {
+                    key: 'out', lane: entry.out,
+                    preset: s.slideOutPreset || 'slide',
+                    duration: s.slideOutDuration, easing: s.slideOutType,
+                    direction: s.slideOutDirection
+                }
+            ];
+            lanes.forEach(({ key, lane, preset, duration, easing, direction }) => {
+                if (lane.custom && !force) {
+                    skipped.push(`${element.id}:${key}`);
+                    return;
+                }
+                const built = this.buildPresetLane(element, key, preset, duration, easing, direction);
+                lane.keyframes = built.keyframes;
+                lane.delay = built.delay;
+                // Re-applying a preset clears the custom flag (it is no longer
+                // hand-tuned). When force is used after a confirm, this is the
+                // intended "replace my custom keyframes" behaviour.
+                lane.custom = false;
+            });
+        });
+        return skipped;
+    }
+
+    // ---- Advanced keyframe editing (used by the Timeline panel UI) ---------
+    // These are thin, testable mutations over a single lane. Each marks the
+    // lane custom (it is now hand-tuned, so a Simple preset must not silently
+    // overwrite it) and re-sorts by time. None of them touch actionDurations;
+    // the caller runs updateActionDurations() once after a batch of edits.
+
+    // Add a keyframe to a lane at time t (ms) capturing the given props. Returns
+    // the inserted keyframe. t is clamped to >= 0; props is { opacity?, tx?, ty?,
+    // scale? }; easing falls back to the lane's last frame easing or 'ease-out'.
+    addKeyframe(elementId, action, t, props = {}, easing) {
+        const lane = this.getLane(elementId, action);
+        const time = Math.max(0, Math.round(Number(t) || 0));
+        const css = OGrafTemplate.EASING_PRESETS.includes(easing)
+            ? easing
+            : (lane.keyframes[lane.keyframes.length - 1]?.easing || 'ease-out');
+        const cleanProps = {};
+        ['opacity', 'tx', 'ty', 'scale'].forEach(key => {
+            if (props[key] !== undefined && props[key] !== null && props[key] !== '') {
+                const num = Number(props[key]);
+                if (Number.isFinite(num)) cleanProps[key] = num;
+            }
+        });
+        const keyframe = { t: time, props: cleanProps, easing: css };
+        lane.keyframes.push(keyframe);
+        lane.custom = true;
+        this.normalizeLane(lane);
+        return keyframe;
+    }
+
+    // Remove the keyframe at index from a lane. Marks the lane custom.
+    removeKeyframe(elementId, action, index) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return false;
+        lane.keyframes.splice(index, 1);
+        lane.custom = true;
+        return true;
+    }
+
+    // Move a keyframe in time, clamped so it cannot cross its neighbours or go
+    // below 0. Returns the keyframe's new index (the lane is kept sorted), or -1
+    // if the index was invalid. Marks the lane custom.
+    moveKeyframe(elementId, action, index, newT) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return -1;
+        const sorted = lane.keyframes.slice().sort((a, b) => a.t - b.t);
+        const orderIndex = sorted.indexOf(lane.keyframes[index]);
+        const lower = orderIndex > 0 ? sorted[orderIndex - 1].t : 0;
+        const upper = orderIndex < sorted.length - 1 ? sorted[orderIndex + 1].t : Infinity;
+        const clamped = Math.max(lower, Math.min(upper, Math.max(0, Math.round(Number(newT) || 0))));
+        const kf = lane.keyframes[index];
+        kf.t = clamped;
+        lane.custom = true;
+        this.normalizeLane(lane);
+        return lane.keyframes.indexOf(kf);
+    }
+
+    // Set the editable props/easing of one keyframe. Marks the lane custom.
+    updateKeyframe(elementId, action, index, updates = {}) {
+        const lane = this.getLane(elementId, action);
+        if (index < 0 || index >= lane.keyframes.length) return false;
+        const kf = lane.keyframes[index];
+        if (!kf.props) kf.props = {};
+        ['opacity', 'tx', 'ty', 'scale'].forEach(key => {
+            if (key in updates) {
+                const raw = updates[key];
+                if (raw === '' || raw === null || raw === undefined) {
+                    delete kf.props[key];
+                } else {
+                    const num = Number(raw);
+                    if (Number.isFinite(num)) kf.props[key] = num;
+                }
+            }
+        });
+        if (updates.easing && OGrafTemplate.EASING_PRESETS.includes(updates.easing)) {
+            kf.easing = updates.easing;
+        }
+        lane.custom = true;
+        return true;
+    }
+
+    // Set a lane's start delay (ms, >= 0). Marks the lane custom.
+    setLaneDelay(elementId, action, delayMs) {
+        const lane = this.getLane(elementId, action);
+        lane.delay = Math.max(0, Math.round(Number(delayMs) || 0));
+        lane.custom = true;
+        return lane.delay;
+    }
+
+    // The real length (ms) of an action across all elements: max over every
+    // lane of (delay + last keyframe time). This is what feeds actionDurations
+    // so the renderer schedules play/stop honestly.
+    computeActionDuration(action) {
+        const timeline = this.getTimeline();
+        let max = 0;
+        Object.values(timeline.elements).forEach(entry => {
+            const lane = action === 'out' ? entry.out : entry.in;
+            if (!lane || !Array.isArray(lane.keyframes) || lane.keyframes.length === 0) return;
+            const last = lane.keyframes.reduce((m, kf) => Math.max(m, Number(kf.t) || 0), 0);
+            const delay = Number(lane.delay) || 0;
+            max = Math.max(max, delay + last);
+        });
+        // Clamp to a finite, non-negative integer: the OGraf schema requires
+        // actionDurations[].duration to be an integer, and JSON.stringify turns
+        // a non-finite value into null (an invalid manifest). Advanced keyframe
+        // editing can introduce fractional or non-finite times, so guard here at
+        // the model layer rather than trusting every caller.
+        return Number.isFinite(max) ? Math.max(0, Math.round(max)) : 0;
+    }
+
+    // Refresh manifest.actionDurations from the current timeline. Published as
+    // honest static timing metadata (ms) for playAction and stopAction so an
+    // on-air renderer knows exactly how long each action takes.
+    updateActionDurations() {
+        this.manifest.actionDurations = [
+            { type: 'playAction', duration: this.computeActionDuration('in') },
+            { type: 'stopAction', duration: this.computeActionDuration('out') }
+        ];
+        return this.manifest.actionDurations;
+    }
+
     // Reject CSS style values that could break out of a `key: value;` declaration
-    // inside the generated `<style>` block. A crafted value containing { } < > or
-    // a double quote could otherwise close the rule or the <style> element and
-    // inject markup. Legitimate values (colors, px, rgba(), Arial, sans-serif)
-    // contain none of these, so they pass through untouched.
+    // inside the generated `<style>` block, OR out of the JS template literal that
+    // the generated component source wraps that block in. A crafted value with
+    // { } < > or a double quote could close the rule or the <style> element; a
+    // backtick or `${` could close the template literal in the generated .mjs and
+    // inject executable code. Legitimate values (colors, px, rgba(), Arial,
+    // sans-serif) contain none of these, so they pass through untouched.
     static sanitizeCssValue(value) {
         const str = String(value);
-        return /[{}<>"]/.test(str) ? '' : str;
+        if (/[{}<>"`]/.test(str) || str.includes('${')) {
+            return '';
+        }
+        return str;
+    }
+
+    // A CSS property name is only safe to splice into a declaration if it is a
+    // plain dashed identifier. Anything else (a key carrying braces, a backtick,
+    // or `${`) is rejected so a crafted style key cannot break out of the rule or
+    // the generated module's template literal the way a value could.
+    static sanitizeCssKey(key) {
+        const kebab = String(key)
+            .replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2')
+            .toLowerCase();
+        return /^-?[a-z][a-z0-9-]*$/.test(kebab) ? kebab : '';
     }
 
     generateElementStyles() {
         // Generate CSS styles for all elements. element.id is already slugified on
-        // import, and each value is checked so it cannot escape the declaration or
-        // the surrounding <style> element.
+        // import, and each key/value is checked so neither can escape the
+        // declaration, the surrounding <style> element, or the generated module's
+        // template literal. A key or value that fails validation is dropped.
         return this.elements.map(element => {
             const styles = Object.entries(element.style || {})
-                .map(([key, value]) => `${this.kebabCase(key)}: ${OGrafTemplate.sanitizeCssValue(value)};`)
+                .map(([key, value]) => {
+                    const safeKey = OGrafTemplate.sanitizeCssKey(key);
+                    if (!safeKey) return '';
+                    return `${safeKey}: ${OGrafTemplate.sanitizeCssValue(value)};`;
+                })
+                .filter(Boolean)
                 .join(' ');
             return `.element-${element.id} { ${styles} }`;
         }).join('\n');
@@ -455,9 +883,16 @@ export class OGrafTemplate {
         // Generate the element styles at template generation time
         const elementStyles = this.generateElementStyles();
 
-        // Serialize elements data and animation settings for the component
+        // Keep declared timing honest: recompute actionDurations from the
+        // timeline before serializing, so the manifest always matches what the
+        // generated component will actually run.
+        this.updateActionDurations();
+
+        // Serialize elements data and the timeline for the component. The
+        // timeline (v_ografEditorTimeline) is the single source the component
+        // animates from via the Web Animations API.
         const elementsData = JSON.stringify(this.elements);
-        const animationSettingsData = JSON.stringify(this.animationSettings || {});
+        const timelineData = JSON.stringify(this.getTimeline());
 
         const className = this.safeClassName();
 
@@ -488,6 +923,17 @@ function safeSrc(value) {
     return '';
 }
 
+// A style property name is only emitted if it is a plain dashed identifier, so a
+// crafted style key cannot close the style="..." attribute and inject markup.
+// Values are escaped separately; the key is not in an escapable context, so it
+// is validated rather than escaped.
+function safeCssKey(key) {
+    const kebab = String(key)
+        .replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2')
+        .toLowerCase();
+    return /^-?[a-z][a-z0-9-]*$/.test(kebab) ? kebab : '';
+}
+
 export default class ${className} extends HTMLElement {
     constructor() {
         super();
@@ -496,8 +942,14 @@ export default class ${className} extends HTMLElement {
         this.isVisible = false;
         this.currentStep = 0;
         this.elements = ${elementsData};
-        this.animationSettings = ${animationSettingsData};
+        // Authored animation timeline. Each element has an "in" lane (played by
+        // playAction) and an "out" lane (played by stopAction). A lane is
+        // { delay, keyframes:[{ t, props:{opacity?,tx?,ty?,scale?}, easing }] }.
+        this.timeline = ${timelineData};
         this.elementStyles = \`${elementStyles}\`;
+        // Live Animation objects currently running, so a new action can cancel
+        // the previous one cleanly instead of fighting it.
+        this.runningAnimations = [];
     }
 
     // OGraf lifecycle: load applies the initial data and renders the graphic.
@@ -508,6 +960,10 @@ export default class ${className} extends HTMLElement {
         }
         this.isVisible = false;
         this.render();
+        // Apply the in-animation's start state immediately so a loaded-but-not-
+        // played graphic shows its pre-animation state (e.g. opacity 0) instead
+        // of its visible resting state. Elements with no in-lane stay at rest.
+        this.applyInitialState('in');
         return { statusCode: 200 };
     }
 
@@ -524,21 +980,29 @@ export default class ${className} extends HTMLElement {
         this.currentStep = 1;
         this.render();
 
-        if (!skipAnimation) {
-            // Wait for render to complete before starting animation
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            await this.animateSlideIn();
-        }
+        // Apply the in-animation's initial keyframe state to every element's
+        // inline style NOW, synchronously, before the browser paints and before
+        // the rAF below. Otherwise the resting (visible) frame paints first and a
+        // fade-in/slide-in element flashes visible before the WAAPI animation
+        // hides it, and stays visible during a lane delay.
+        this.applyInitialState('in');
+
+        // Wait one frame so the rendered elements are laid out before the Web
+        // Animations API reads/animates them.
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        // Run the authored "in" timeline and resolve ONLY when it finishes (or
+        // immediately, snapped to the end, when skipAnimation is true).
+        await this.runActionAnimation('in', skipAnimation);
 
         return { statusCode: 200, currentStep: this.currentStep };
     }
 
     async stopAction(params = {}) {
         const { skipAnimation } = params;
-        if (!skipAnimation) {
-            // Trigger slide-out animation before hiding
-            await this.animateSlideOut();
-        }
+
+        // Run the authored "out" timeline to completion before clearing, unless
+        // skipAnimation snaps it to the end state instantly.
+        await this.runActionAnimation('out', skipAnimation);
 
         this.isVisible = false;
         this.currentStep = 0;
@@ -558,120 +1022,156 @@ export default class ${className} extends HTMLElement {
     }
 
     async customAction(params = {}) {
-        const { id } = params;
+        const { id, skipAnimation } = params;
         switch (id) {
             case 'slideIn':
-                await this.animateSlideIn();
+                await this.runActionAnimation('in', skipAnimation);
                 return { statusCode: 200 };
             case 'slideOut':
-                await this.animateSlideOut();
+                await this.runActionAnimation('out', skipAnimation);
                 return { statusCode: 200 };
             default:
                 return { statusCode: 200 };
         }
     }
 
-    // Compute the transform that places the whole graphic just off the given
-    // stage edge, derived from the stage size and the elements' bounding box.
-    // This makes the graphic slide fully on/off screen as a unit, regardless of
-    // element size or position. A self-relative percentage (translateX(100%))
-    // only moved an element by its own width, so a small element parked on the
-    // left appeared to start mid-stage instead of off the right edge.
-    offStageTransform(direction) {
-        const elements = this.shadowRoot.querySelectorAll('.element');
-        const stageW = this.offsetWidth || 1920;
-        const stageH = this.offsetHeight || 1080;
-        let minLeft = Infinity, maxRight = -Infinity, minTop = Infinity, maxBottom = -Infinity;
-        elements.forEach(el => {
-            const left = el.offsetLeft;
-            const top = el.offsetTop;
-            minLeft = Math.min(minLeft, left);
-            maxRight = Math.max(maxRight, left + el.offsetWidth);
-            minTop = Math.min(minTop, top);
-            maxBottom = Math.max(maxBottom, top + el.offsetHeight);
-        });
-        switch (direction) {
-            case 'right': return \`translate(\${stageW - minLeft}px, 0px)\`;
-            case 'top': return \`translate(0px, \${-maxBottom}px)\`;
-            case 'bottom': return \`translate(0px, \${stageH - minTop}px)\`;
-            case 'left':
-            default: return \`translate(\${-maxRight}px, 0px)\`;
+    // Translate one authored keyframe's props into a Web Animations API keyframe
+    // for the given offset (0..1). tx/ty are offsets in px from the element's
+    // resting position; scale is a multiplier; opacity is 0..1.
+    timelineKeyframeToWAAPI(kf, offset) {
+        const props = (kf && kf.props) || {};
+        const tx = Number(props.tx) || 0;
+        const ty = Number(props.ty) || 0;
+        const hasScale = props.scale !== undefined && props.scale !== null;
+        const scale = hasScale ? Number(props.scale) : 1;
+        const out = {
+            offset,
+            transform: \`translate(\${tx}px, \${ty}px) scale(\${scale})\`
+        };
+        if (props.opacity !== undefined && props.opacity !== null) {
+            out.opacity = Number(props.opacity);
         }
+        // Per-keyframe easing applies from this keyframe to the next.
+        if (kf && typeof kf.easing === 'string' && kf.easing) {
+            out.easing = kf.easing;
+        }
+        return out;
     }
 
-    animateSlideIn() {
-        return new Promise((resolve) => {
-            const settings = this.animationSettings || {};
+    // Build the WAAPI keyframe list + timing for one element lane. Each element
+    // animates over its own span (its last keyframe time), offset by its delay;
+    // there is no shared-clock scaling across elements. Returns null when the
+    // lane is empty (element does not animate; it stays at its resting state).
+    buildLaneEffect(lane) {
+        if (!lane || !Array.isArray(lane.keyframes) || lane.keyframes.length === 0) {
+            return null;
+        }
+        const sorted = lane.keyframes.slice().sort((a, b) => (a.t || 0) - (b.t || 0));
+        const delay = Number(lane.delay) || 0;
+        const last = sorted.reduce((m, kf) => Math.max(m, Number(kf.t) || 0), 0);
+        // Map offsets over the full [0..last] span. The element animates over its
+        // own length (last keyframe time), offset by its delay; there is no
+        // shared-clock scaling across elements.
+        const span = last > 0 ? last : 1;
+        const keyframes = sorted.map(kf => this.timelineKeyframeToWAAPI(kf, (Number(kf.t) || 0) / span));
+        // Guarantee an explicit offset:0 frame holding the earliest authored
+        // value. Without it, when the first authored keyframe is at t>0 (or there
+        // is only one keyframe), WAAPI synthesizes the 0-offset from the
+        // element's underlying/computed style and the authored first value is
+        // ignored. Cloning the earliest frame at offset 0 honors the gap before
+        // it as a lead-in hold, so the element holds its first authored state
+        // from the start of the (delay-offset) span.
+        if (keyframes.length === 0 || keyframes[0].offset !== 0) {
+            keyframes.unshift({ ...keyframes[0], offset: 0 });
+        }
+        return { keyframes, timing: { duration: span, delay, fill: 'both', easing: 'linear' } };
+    }
 
-            const elements = this.shadowRoot.querySelectorAll('.element');
-            if (elements.length === 0) {
-                resolve();
+    // Apply each element's pre-animation state for an action ('in' | 'out')
+    // directly to its inline style, synchronously and BEFORE any paint/rAF. This
+    // is what stops an element that should start hidden (e.g. a fade-in with
+    // opacity 0 at t:0, or a slide-in translated off-stage) from flashing at its
+    // visible resting state on the first painted frame and during any lane delay.
+    // For each .element node with a lane for this action we read the lane's
+    // offset:0 WAAPI keyframe (buildLaneEffect always provides one) and set
+    // opacity/transform from it. Elements with no lane for this action are left
+    // at their resting state (no inline override). After the WAAPI animation
+    // runs, fill:'both' holds the final (visible) state, so the resting style is
+    // correct again at the end.
+    applyInitialState(action) {
+        const timeline = this.timeline || { elements: {} };
+        const nodes = this.shadowRoot.querySelectorAll('.element');
+        if (!nodes || nodes.length === 0) return;
+        nodes.forEach(node => {
+            const id = node.getAttribute('data-element-id');
+            const entry = id && timeline.elements ? timeline.elements[id] : null;
+            const lane = entry ? (action === 'out' ? entry.out : entry.in) : null;
+            const effect = this.buildLaneEffect(lane);
+            if (!effect || !effect.keyframes || effect.keyframes.length === 0) {
+                // No lane: leave the element at its resting state.
                 return;
             }
-
-            // Default per field so an empty or partial settings object still
-            // produces valid CSS (an empty object is truthy, so a single
-            // object-level fallback would not catch it).
-            // Coerce to a number: settings may arrive as strings (e.g. "1500"
-            // from a number input), and Number.isFinite('1500') is false, so the
-            // duration was silently falling back to 500 and edits had no effect.
-            const slideInDurationNum = Number(settings.slideInDuration);
-            const duration = Number.isFinite(slideInDurationNum) && slideInDurationNum >= 0 ? slideInDurationNum : 500;
-            const timing = settings.slideInType || 'ease-out';
-            const direction = settings.slideInDirection || 'left';
-
-            // Start fully off the chosen stage edge, then slide to rest.
-            const startTransform = this.offStageTransform(direction);
-
-            elements.forEach(element => {
-                element.style.transform = startTransform;
-                element.style.transition = 'none';
-            });
-
-            // Force a reflow on the host so the initial transform is committed
-            // before the transition is enabled (ShadowRoot has no offsetHeight).
-            void this.offsetHeight;
-
-            elements.forEach(element => {
-                element.style.transition = \`transform \${duration}ms \${timing}\`;
-
-                // Trigger animation to the resting position.
-                requestAnimationFrame(() => {
-                    element.style.transform = 'translate(0px, 0px)';
-                });
-            });
-
-            // Resolve after animation completes
-            setTimeout(resolve, duration);
+            const first = effect.keyframes[0];
+            if (first.opacity !== undefined && first.opacity !== null) {
+                node.style.opacity = String(first.opacity);
+            }
+            if (first.transform) {
+                node.style.transform = first.transform;
+            }
         });
     }
-    
-    animateSlideOut() {
-        return new Promise((resolve) => {
-            const settings = this.animationSettings || {};
 
-            const elements = this.shadowRoot.querySelectorAll('.element');
-            if (elements.length === 0) {
-                resolve();
-                return;
-            }
+    // Run an action's authored timeline ('in' | 'out') across every element via
+    // the Web Animations API. Resolves only when every element's
+    // animation.finished resolves. When skipAnimation is true it starts each
+    // animation then immediately finish()es it, snapping to the end state and
+    // still resolving (the OGraf skipAnimation contract).
+    async runActionAnimation(action, skipAnimation) {
+        // Cancel any in-flight animations from a previous action.
+        this.runningAnimations.forEach(a => { try { a.cancel(); } catch (e) { /* ignore */ } });
+        this.runningAnimations = [];
 
-            const slideOutDurationNum = Number(settings.slideOutDuration);
-            const duration = Number.isFinite(slideOutDurationNum) && slideOutDurationNum >= 0 ? slideOutDurationNum : 500;
-            const timing = settings.slideOutType || 'ease-in';
-            const direction = settings.slideOutDirection || settings.slideInDirection || 'left';
+        const timeline = this.timeline || { elements: {} };
+        const nodes = this.shadowRoot.querySelectorAll('.element');
+        if (!nodes || nodes.length === 0) {
+            return;
+        }
+        if (typeof Element.prototype.animate !== 'function') {
+            // No WAAPI available: nothing to animate, resting state is correct.
+            return;
+        }
 
-            // Slide the whole graphic off the chosen stage edge as a unit.
-            const endTransform = this.offStageTransform(direction);
-
-            elements.forEach(element => {
-                element.style.transition = \`transform \${duration}ms \${timing}\`;
-                element.style.transform = endTransform;
-            });
-            
-            // Resolve after animation completes
-            setTimeout(resolve, duration);
+        const animations = [];
+        nodes.forEach(node => {
+            const id = node.getAttribute('data-element-id');
+            const entry = id && timeline.elements ? timeline.elements[id] : null;
+            const lane = entry ? (action === 'out' ? entry.out : entry.in) : null;
+            const effect = this.buildLaneEffect(lane);
+            if (!effect) return;
+            const anim = node.animate(effect.keyframes, effect.timing);
+            animations.push(anim);
         });
+
+        if (animations.length === 0) {
+            return;
+        }
+        this.runningAnimations = animations;
+
+        if (skipAnimation) {
+            // Snap instantly to the end state, then resolve.
+            animations.forEach(a => { try { a.finish(); } catch (e) { /* ignore */ } });
+            this.runningAnimations = [];
+            return;
+        }
+
+        // Resolve only when every animation has finished (the spec contract:
+        // the action promise tracks animation.finished, never a setTimeout).
+        try {
+            await Promise.all(animations.map(a => a.finished));
+        } catch (e) {
+            // A cancel() rejects .finished; treat a superseded action as done.
+        }
+        this.runningAnimations = [];
     }
 
     render() {
@@ -705,33 +1205,43 @@ export default class ${className} extends HTMLElement {
     renderElement(element) {
         const baseStyles = \`left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;\`;
         
-        // Convert element.style object to CSS string. Escape each value for the
-        // double-quoted style="..." attribute context so an imported style value
-        // cannot close the attribute and inject markup. element.x/y/width/height
-        // are numbers set by the editor, so baseStyles needs no escaping.
+        // Convert element.style object to CSS string. Validate each key (drop it
+        // unless it is a plain dashed identifier) and escape each value for the
+        // double-quoted style="..." attribute context, so an imported style key
+        // or value cannot close the attribute and inject markup.
+        // element.x/y/width/height are numbers set by the editor, so baseStyles
+        // needs no escaping.
         const additionalStyles = element.style ? Object.entries(element.style)
-            .map(([key, value]) => \`\${this.kebabCase(key)}: \${escapeHtml(value)};\`)
+            .map(([key, value]) => {
+                const safeKey = safeCssKey(key);
+                return safeKey ? \`\${safeKey}: \${escapeHtml(value)};\` : '';
+            })
+            .filter(Boolean)
             .join(' ') : '';
         
         const allStyles = baseStyles + ' ' + additionalStyles;
-        
+
+        // data-element-id keys the per-element animation lane lookup at play/stop
+        // time. element.id is slugified ([a-z0-9-]) so it is attribute-safe.
+        const idAttr = \`data-element-id="\${element.id}"\`;
+
         switch (element.type) {
             case 'text': {
                 // Text context: escape the resolved data value.
                 const content = this.interpolateContent(element.content || '');
-                return \`<div class="element element-\${element.id}" style="\${allStyles}">\${content}</div>\`;
+                return \`<div class="element element-\${element.id}" \${idAttr} style="\${allStyles}">\${content}</div>\`;
             }
             case 'image': {
                 // src context: only allow http(s)/data:image URLs, else blank src.
                 const src = this.interpolateContent(element.content || '', 'src');
-                return \`<img class="element element-\${element.id}" src="\${src}" style="\${allStyles}" />\`;
+                return \`<img class="element element-\${element.id}" \${idAttr} src="\${src}" style="\${allStyles}" />\`;
             }
             case 'rect':
             case 'rectangle':
-                return \`<div class="element element-\${element.id}" style="\${allStyles}"></div>\`;
+                return \`<div class="element element-\${element.id}" \${idAttr} style="\${allStyles}"></div>\`;
             case 'circle':
                 const circleStyles = allStyles + ' border-radius: 50%;';
-                return \`<div class="element element-\${element.id}" style="\${circleStyles}"></div>\`;
+                return \`<div class="element element-\${element.id}" \${idAttr} style="\${circleStyles}"></div>\`;
             default:
                 return '';
         }
@@ -781,6 +1291,18 @@ export default class ${className} extends HTMLElement {
                 clean[key] = value;
             }
         }
+        // Persist the authored editor elements (and timeline, if any) under
+        // v_-prefixed vendor keys. The OGraf v1 schema allows any ^v_.* property
+        // (patternProperties) even under additionalProperties:false, so this stays
+        // spec-valid. Without this, a manifest/bundle round-trip rebuilds elements
+        // from the schema with default positions, discarding authored
+        // x/y/width/height/style/content and any rect/circle/image elements.
+        if (Array.isArray(this.elements) && this.elements.length > 0) {
+            clean.v_ografEditorElements = this.elements;
+        }
+        if (this.timeline !== undefined && this.timeline !== null) {
+            clean.v_ografEditorTimeline = this.timeline;
+        }
         return clean;
     }
 
@@ -819,6 +1341,17 @@ export default class ${className} extends HTMLElement {
             }))
             : json.elements;
         template.webComponent = json.webComponent;
+
+        // Repair / migrate the timeline. A template saved before the timeline
+        // existed (or an imported bare manifest) has no v_ografEditorTimeline;
+        // seed it from the persisted animationSettings preset so its existing
+        // slide animation survives. getTimeline() also normalizes the shape.
+        template.getTimeline();
+        const hasAnyLane = Object.keys(template.manifest.v_ografEditorTimeline.elements).length > 0;
+        if (!hasAnyLane && Array.isArray(template.elements) && template.elements.length > 0) {
+            template.applyPresetToTimeline(true);
+        }
+        template.updateActionDurations();
         return template;
     }
 }

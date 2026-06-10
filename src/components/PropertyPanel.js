@@ -1,4 +1,5 @@
 import { escapeHtml } from '../utils/escapeHtml.js';
+import { OGrafTemplate } from '../models/OGrafTemplate.js';
 
 export class PropertyPanel {
     constructor(containerElement, visualEditor, templateManager) {
@@ -117,9 +118,12 @@ export class PropertyPanel {
             </div>
 
             <div class="property-section collapsible" data-section="animation">
-                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Animation Settings</button>
-                <p class="section-description">Configure how graphics animate when playing and stopping.</p>
-                
+                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Animation (quick presets)</button>
+                <p class="section-description">Pick how the graphic animates in and out. For fine control, use the Timeline panel at the bottom.</p>
+
+                ${this.renderPresetChips(template, animationSettings)}
+                ${this.renderCustomBadgeNote(template)}
+
                 <div class="property-group">
                     <label>Slide In Duration (ms)</label>
                     <input type="number" class="property-input" data-animation-property="slideInDuration" value="${animationSettings.slideInDuration}" min="100" max="3000" step="100">
@@ -178,6 +182,53 @@ export class PropertyPanel {
         this.setupDataInputEventListeners();
         this.restoreDataInputFocus();
         this.setupCollapsibleSections(container);
+    }
+
+    // Preset chips for the Simple path. Selecting a chip sets the preset for
+    // both the in and out lanes and regenerates the timeline keyframes through
+    // the shared model API (applyPresetToTimeline), honouring the custom-lock
+    // guardrail. "Slide" keeps the existing direction controls below; the other
+    // presets ignore direction.
+    renderPresetChips(template, animationSettings) {
+        const current = animationSettings.slideInPreset || 'slide';
+        const chips = [
+            { value: 'none', label: 'None' },
+            { value: 'fade', label: 'Fade' },
+            { value: 'slide', label: 'Slide' },
+            { value: 'pop', label: 'Pop' }
+        ];
+        const buttons = chips.map(chip => `
+            <button type="button" class="preset-chip ${current === chip.value ? 'active' : ''}"
+                    data-animation-preset="${chip.value}"
+                    aria-pressed="${current === chip.value}">${chip.label}</button>
+        `).join('');
+        return `
+            <div class="property-group">
+                <label id="preset-chips-label">Preset</label>
+                <div class="preset-chips" role="group" aria-labelledby="preset-chips-label">
+                    ${buttons}
+                </div>
+            </div>
+        `;
+    }
+
+    // Show which elements carry hand-tuned (custom) lanes, so the operator knows
+    // a Simple preset will not silently overwrite them.
+    renderCustomBadgeNote(template) {
+        const timeline = template.getTimeline();
+        const customIds = Object.entries(timeline.elements || {})
+            .filter(([, entry]) => (entry.in && entry.in.custom) || (entry.out && entry.out.custom))
+            .map(([id]) => id);
+        if (customIds.length === 0) return '';
+        const badges = customIds
+            .map(id => `<span class="custom-badge" title="Hand-tuned in the Timeline panel">${this.escapeHtml(id)} <strong>Custom</strong></span>`)
+            .join('');
+        return `
+            <div class="property-group custom-lane-note">
+                <p class="help-text">These elements have custom keyframes. A preset will ask before replacing them.</p>
+                <div class="custom-badges">${badges}</div>
+            </div>
+        `;
     }
 
     // Make the template-level sections collapsible so the narrow sidebar is not
@@ -326,8 +377,10 @@ export class PropertyPanel {
                 <h4>Element Properties</h4>
                 
                 <div class="property-group">
-                    <label>Element ID</label>
-                    <input type="text" class="property-input" data-property="id" value="${escapeHtml(element.id)}" readonly>
+                    <label for="element-id-input">Element ID</label>
+                    <input type="text" id="element-id-input" class="property-input element-id-input" data-element-id-input value="${escapeHtml(element.id)}" autocomplete="off" spellcheck="false" aria-describedby="element-id-help">
+                    <p class="data-input-error" data-element-id-error role="alert" hidden></p>
+                    <small id="element-id-help" class="help-text">Lowercase letters, numbers and hyphens. Must be unique. Used for styling and animation.</small>
                 </div>
 
                 <div class="property-group">
@@ -370,6 +423,18 @@ export class PropertyPanel {
         `;
 
         this.setupPropertyEventListeners(container);
+
+        // The panel re-renders via innerHTML after a successful id rename, which
+        // detaches the id input. Restore focus + selection so the keyboard user
+        // keeps their place on the (now renamed) field.
+        if (this.elementIdFocus) {
+            this.elementIdFocus = false;
+            const idInput = container.querySelector('[data-element-id-input]');
+            if (idInput) {
+                idInput.focus();
+                if (typeof idInput.select === 'function') idInput.select();
+            }
+        }
     }
 
     setupAnimationEventListeners() {
@@ -388,6 +453,14 @@ export class PropertyPanel {
         templateInputs.forEach(input => {
             input.addEventListener('input', (e) => {
                 this.updateTemplateProperty(e.target.dataset.templateProperty, e.target.value);
+            });
+        });
+
+        // Preset chips: set both in/out preset and regenerate the timeline.
+        const presetChips = container.querySelectorAll('[data-animation-preset]');
+        presetChips.forEach(chip => {
+            chip.addEventListener('click', () => {
+                this.applyPreset(chip.dataset.animationPreset);
             });
         });
 
@@ -547,6 +620,13 @@ export class PropertyPanel {
     }
 
     commitDataInputKey(oldKey, input) {
+        // The Key input commits on both 'change' and 'blur'. A successful
+        // rename re-renders the panel via innerHTML, detaching this input;
+        // the trailing blur then fires against the stale, detached node and
+        // would re-commit against gone state and focus a detached element.
+        // No-op once the input is no longer in the document.
+        if (input && !input.isConnected) return;
+
         const template = this.templateManager.getCurrentTemplate();
         if (!template) return;
 
@@ -854,6 +934,20 @@ export class PropertyPanel {
     }
 
     setupPropertyEventListeners(container) {
+        // Element ID. Editable, but commits on change/blur only, never per
+        // keystroke, so a half-typed id is not treated as a rename. The id is a
+        // CSS class segment and the timeline-lane key, not a data token, so a
+        // rename never rewrites {{token}} content. Clear any error while editing.
+        const idInput = container.querySelector('[data-element-id-input]');
+        if (idInput) {
+            idInput.addEventListener('input', () => {
+                this.clearElementIdError(idInput);
+            });
+            const commitId = () => this.commitElementId(idInput);
+            idInput.addEventListener('change', commitId);
+            idInput.addEventListener('blur', commitId);
+        }
+
         // Basic property inputs
         const propertyInputs = container.querySelectorAll('.property-input[data-property]');
         propertyInputs.forEach(input => {
@@ -878,16 +972,30 @@ export class PropertyPanel {
             });
         });
 
-        // Color picker synchronization
+        // Color picker synchronization.
+        //
+        // The native <input type=color> swatch can only hold an opaque
+        // #rrggbb. The text field is the source of truth and may hold values
+        // the swatch cannot represent (rgba with alpha, 'transparent', named
+        // colors). The swatch only writes its hex into the text field on an
+        // EXPLICIT user interaction: the browser fires this 'input'/'change'
+        // event only from real user input, never from our programmatic
+        // picker.value assignment during render. That is what keeps the
+        // initial render from silently overwriting an authored rgba/alpha or
+        // 'transparent' value with the swatch's #000000 fallback. Writing the
+        // hex on a deliberate swatch pick (which does drop alpha) is the
+        // accepted convenience tradeoff.
         const colorPickers = container.querySelectorAll('.color-picker');
         colorPickers.forEach(picker => {
-            picker.addEventListener('input', (e) => {
+            const writeFromSwatch = (e) => {
                 const textInput = picker.nextElementSibling;
                 if (textInput && textInput.classList.contains('color-text')) {
                     textInput.value = e.target.value;
                     textInput.dispatchEvent(new Event('input'));
                 }
-            });
+            };
+            picker.addEventListener('input', writeFromSwatch);
+            picker.addEventListener('change', writeFromSwatch);
         });
 
         const colorTextInputs = container.querySelectorAll('.color-text');
@@ -896,6 +1004,10 @@ export class PropertyPanel {
                 const picker = textInput.previousElementSibling;
                 if (picker && picker.classList.contains('color-picker')) {
                     const hexColor = this.colorToHex(e.target.value);
+                    // null means the authored value (rgba/alpha/transparent/
+                    // unknown) cannot be shown in the swatch. Leave the swatch
+                    // alone rather than coercing it to a wrong color; the text
+                    // field remains the source of truth.
                     if (hexColor) {
                         picker.value = hexColor;
                     }
@@ -938,6 +1050,111 @@ export class PropertyPanel {
         this.render();
     }
 
+    // Commit an element-id rename. Validates here for an inline error (mirrors
+    // the data-input Key validation pattern), then delegates the atomic mutation
+    // (element.id, timeline lane migration, regenerate) to the model. On success
+    // it preserves selection under the new id across the VisualEditor, this
+    // panel, the canvas, the timeline panel, and the preview.
+    commitElementId(input) {
+        // The input commits on both 'change' and 'blur'. A successful rename
+        // re-renders this panel via innerHTML, detaching the input; the trailing
+        // blur then fires against the stale node. No-op once detached.
+        if (input && !input.isConnected) return;
+        if (!this.currentElement) return;
+
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        const oldId = this.currentElement;
+        const newId = input.value.trim();
+
+        // No change: clear any error, do nothing.
+        if (newId === oldId) {
+            this.clearElementIdError(input);
+            return;
+        }
+
+        if (newId === '') {
+            this.showElementIdError(input, 'Enter an id. It cannot be empty.');
+            return;
+        }
+
+        // slug-safe: lowercase letters, numbers, hyphens only.
+        if (!/^[a-z0-9-]+$/.test(newId) || OGrafTemplate.slugifyId(newId) !== newId) {
+            this.showElementIdError(input, 'Use lowercase letters, numbers and hyphens only.');
+            return;
+        }
+
+        // Unique among the template's elements.
+        if (template.elements.some(el => el.id === newId)) {
+            this.showElementIdError(input, 'That id is already used. Pick a different one.');
+            return;
+        }
+
+        const result = template.renameElementId(oldId, newId);
+        if (!result.ok) {
+            // The model rejected it for the same reasons we checked; surface a
+            // generic message rather than silently dropping the edit.
+            this.showElementIdError(input, 'That id cannot be used. Pick a different one.');
+            return;
+        }
+
+        // Persist and keep every surface that keys off the element id in sync.
+        this.templateManager.saveToStorage();
+
+        // The selection in both the panel and the visual editor tracks the id,
+        // so move it to the new id or selection is lost on the next render.
+        this.currentElement = result.id;
+        // Keep focus on the (now renamed) id input across the re-render that the
+        // elementSelected dispatch below triggers on this panel.
+        this.elementIdFocus = true;
+        if (this.visualEditor) {
+            this.visualEditor.selectedElement = result.id;
+            this.visualEditor.render();
+            // Re-announce selection so this panel re-renders under the new id and
+            // the timeline panel (and any other listener) re-keys to it and keeps
+            // the track highlighted. This panel's elementSelected handler calls
+            // render(), which consumes elementIdFocus and restores focus.
+            this.visualEditor.dispatchEvent('elementSelected', { elementId: result.id });
+        } else {
+            this.render();
+        }
+        // The timeline panel re-keys to the new id via its own elementSelected
+        // listener; refresh it explicitly too in case the dispatch path changes.
+        this.refreshTimelinePanel();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+    }
+
+    showElementIdError(input, message) {
+        input.setAttribute('aria-invalid', 'true');
+        const errorEl = this.container.querySelector('[data-element-id-error]');
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.hidden = false;
+            // Point the input at both the help text and the error for AT users.
+            input.setAttribute('aria-describedby', 'element-id-help element-id-error');
+            errorEl.id = 'element-id-error';
+        }
+        input.focus();
+        if (typeof input.select === 'function') {
+            input.select();
+        }
+    }
+
+    clearElementIdError(input) {
+        if (input) {
+            input.removeAttribute('aria-invalid');
+            input.setAttribute('aria-describedby', 'element-id-help');
+        }
+        const errorEl = this.container.querySelector('[data-element-id-error]');
+        if (errorEl) {
+            errorEl.textContent = '';
+            errorEl.hidden = true;
+        }
+    }
+
     updateElementProperty(property, value) {
         if (!this.currentElement) return;
 
@@ -971,17 +1188,91 @@ export class PropertyPanel {
         // so coerce duration fields to numbers (the generated component and the
         // manifest actionDurations expect numeric ms).
         const isDuration = property === 'slideInDuration' || property === 'slideOutDuration';
-        template.animationSettings[property] = isDuration ? Number(value) : value;
-        
+        if (isDuration) {
+            // An empty/blank field gives Number('') === 0, which would build a
+            // 0ms animation. Treat empty as "no change" so a mid-edit cleared
+            // field never overwrites the stored duration with 0; the value is
+            // recommitted once the user types a real number.
+            if (String(value).trim() === '') return;
+            const ms = Number(value);
+            if (!Number.isFinite(ms)) return;
+            template.animationSettings[property] = ms;
+        } else {
+            template.animationSettings[property] = value;
+        }
+
+        // A duration/easing/direction change is a Simple-path edit: regenerate
+        // the timeline keyframes from the preset so the change actually takes
+        // effect (the animation is driven by the timeline, not these settings
+        // directly). The custom-lock guardrail leaves hand-tuned lanes alone.
+        const skipped = template.applyPresetToTimeline(false);
+        template.updateActionDurations();
+
         // Save changes
         this.templateManager.saveToStorage();
-        
+
         // Regenerate web component with new animation settings
         template.generateWebComponent();
-        
+
         // Reload the preview component to use new animation settings
         if (this.previewEngine) {
             this.previewEngine.reloadComponent();
+        }
+
+        // Refresh the bottom timeline panel so its lanes/durations stay in sync.
+        this.refreshTimelinePanel();
+
+        // If a setting changed but some lanes were skipped because they are
+        // custom, let the user know (and re-render to show the Custom badges).
+        if (skipped.length > 0) {
+            this.render();
+        }
+    }
+
+    // Apply a Simple preset (None / Fade / Slide / Pop) to every element's in
+    // and out lanes. This is the one-directional guardrail: if any lane is
+    // custom (hand-tuned in the Timeline panel), ask for explicit confirmation
+    // before replacing it. Confirm -> force-apply (clears custom). Cancel ->
+    // apply only to non-custom lanes, leaving the hand-tuned ones intact.
+    applyPreset(preset) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        if (!template.animationSettings) template.animationSettings = {};
+        template.animationSettings.slideInPreset = preset;
+        template.animationSettings.slideOutPreset = preset;
+
+        // Detect custom lanes up front so we can ask before clobbering them.
+        const timeline = template.getTimeline();
+        const hasCustom = Object.values(timeline.elements || {})
+            .some(entry => (entry.in && entry.in.custom) || (entry.out && entry.out.custom));
+
+        let force = false;
+        if (hasCustom) {
+            const presetLabel = preset.charAt(0).toUpperCase() + preset.slice(1);
+            force = confirm(
+                `Replace your custom keyframes with the ${presetLabel} preset? This cannot be undone.`
+            );
+        }
+
+        template.applyPresetToTimeline(force);
+        template.updateActionDurations();
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+        this.refreshTimelinePanel();
+        this.render();
+    }
+
+    // The bottom Timeline panel is owned by the app shell, not this panel. Reach
+    // it through the global app instance (the same channel used elsewhere) and
+    // re-render so its lanes/diamonds/durations reflect a Simple-path edit.
+    refreshTimelinePanel() {
+        const app = window.ografEditor;
+        if (app && app.timelinePanel) {
+            app.timelinePanel.render();
         }
     }
 
@@ -1034,24 +1325,63 @@ export class PropertyPanel {
         }
     }
 
+    // Reduce an authored color value to the 6-digit #rrggbb the native
+    // <input type=color> swatch can hold. The swatch cannot represent alpha or
+    // named keywords, so anything it cannot show (rgba with alpha, transparent)
+    // returns null. Callers MUST treat null as "the swatch is only a preview;
+    // do not write its value back" so authored rgba/alpha/transparent is never
+    // clobbered. Accepts 3/4/6/8-digit hex (alpha digits are dropped for the
+    // swatch), rgb()/rgba() (alpha < 1 returns null), and a small named set.
     colorToHex(color) {
         if (!color) return null;
-        
-        // If already hex, return as is
-        if (color.startsWith('#')) {
-            return color.length === 7 ? color : null;
+
+        const value = String(color).trim();
+
+        // Hex: accept #rgb, #rgba, #rrggbb, #rrggbbaa. Expand short form and
+        // drop any alpha component for the swatch value.
+        if (value.startsWith('#')) {
+            const hex = value.slice(1);
+            if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+                const [r, g, b] = hex.split('');
+                return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+            }
+            if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+                // #rgba: expand rgb, ignore alpha.
+                const [r, g, b] = hex.split('');
+                return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+            }
+            if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+                return `#${hex.toLowerCase()}`;
+            }
+            if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+                // #rrggbbaa: drop alpha for the swatch.
+                return `#${hex.slice(0, 6).toLowerCase()}`;
+            }
+            return null;
         }
-        
-        // Handle rgb() format
-        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+
+        // rgb() and rgba(). Capture an optional alpha; if the color is
+        // meaningfully transparent (alpha < 1) the swatch cannot represent it,
+        // so return null and let the authored value stand.
+        const rgbMatch = value.match(
+            /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i
+        );
         if (rgbMatch) {
-            const r = parseInt(rgbMatch[1]);
-            const g = parseInt(rgbMatch[2]);
-            const b = parseInt(rgbMatch[3]);
-            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+            const alpha = rgbMatch[4] === undefined ? 1 : parseFloat(rgbMatch[4]);
+            if (Number.isFinite(alpha) && alpha < 1) {
+                return null;
+            }
+            const clamp = n => Math.max(0, Math.min(255, parseInt(n, 10)));
+            const r = clamp(rgbMatch[1]);
+            const g = clamp(rgbMatch[2]);
+            const b = clamp(rgbMatch[3]);
+            const hex = n => n.toString(16).padStart(2, '0');
+            return `#${hex(r)}${hex(g)}${hex(b)}`;
         }
-        
-        // Handle named colors (basic set)
+
+        // Named colors (basic set). 'transparent' has no opaque hex equivalent,
+        // so it is intentionally absent: the swatch falls back to its neutral
+        // default and the authored 'transparent' value is preserved.
         const namedColors = {
             'white': '#ffffff',
             'black': '#000000',
@@ -1060,10 +1390,9 @@ export class PropertyPanel {
             'blue': '#0000ff',
             'yellow': '#ffff00',
             'cyan': '#00ffff',
-            'magenta': '#ff00ff',
-            'transparent': '#000000'
+            'magenta': '#ff00ff'
         };
-        
-        return namedColors[color.toLowerCase()] || null;
+
+        return namedColors[value.toLowerCase()] || null;
     }
 }

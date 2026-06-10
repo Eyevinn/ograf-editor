@@ -149,6 +149,35 @@ Each template consists of:
 - **Web Component** (`.mjs`): HTML/CSS/JavaScript implementation
 - **Generated code**: Fully compliant with OGraf rendering systems
 
+## Verifying Your Export
+
+The editor produces a spec-clean manifest, but before you trust a template on air it is worth verifying the export independently. There are three levels, from quickest to most complete. If a template passes all three, it is compatible in practice.
+
+Validate against the **Graphics** part of the spec (stable since 2025-09-17), not the Control/Server API, which is still draft and may change into mid-2026.
+
+### 1. JSON Schema validation of the manifest
+
+The manifest carries a `$schema` field pointing at the normative schema, so you can validate it machine-side:
+
+```bash
+npx ajv-cli validate \
+  -s https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json \
+  -d "my-graphic.ograf.json" \
+  --spec=draft2020
+```
+
+Because the manifest must be named `*.ograf.json`, editors with JSON-schema support (such as VS Code) pick up the `$schema` reference automatically and give you inline validation while you edit. Note that this validates the manifest only, not that the web component actually implements `load()`, `dispose()`, `playAction()`, `stopAction()`, and `updateAction()` correctly. The devtool below covers that.
+
+### 2. OGraf Devtool (reference checker)
+
+SuperFlyTV's [ograf-devtool](https://ograf-devtool.superfly.tv) is the working group's reference tool. It loads and renders OGraf graphics directly from your local disk via the File System Access API, runs checks for the common mistakes that make a graphic non-compliant, and gives you a control GUI to exercise play, stop, update, and custom actions for both real-time and non-real-time graphics. Point it at your exported folder and it reads your changes live as you edit.
+
+### 3. End-to-end test in a real renderer
+
+For a true end-to-end check, import your export into an independent renderer such as [SPX Graphics](https://www.spx.graphics/), which has built-in OGraf support, and confirm it actually plays out. This catches anything the schema and the devtool cannot.
+
+A practical workflow: ajv against the schema, then open the export in ograf-devtool and run its checks plus a playout test, then verify in SPX as an independent renderer.
+
 ## Browser Compatibility
 
 - **Chrome 90+** (recommended for best Monaco Editor experience)
