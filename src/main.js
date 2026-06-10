@@ -516,8 +516,11 @@ class OGrafEditor {
         }
 
         try {
-            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'json');
-            this.showSuccessMessage('Template exported successfully');
+            // Export the spec-compliant OGraf package: the manifest (<id>.ograf.json,
+            // per the spec the manifest file name MUST end with .ograf.json) and the
+            // component module (template.mjs that the manifest's "main" references).
+            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'folder');
+            this.showSuccessMessage('Exported the .ograf.json manifest and the .mjs component');
         } catch (error) {
             alert(`Export failed: ${error.message}`);
         }
