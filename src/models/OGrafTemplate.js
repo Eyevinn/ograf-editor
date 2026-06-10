@@ -827,7 +827,7 @@ export class OGrafTemplate {
             this.manifest.v_ografEditorDataSource = ds;
         }
         if (typeof ds.enabled !== 'boolean') ds.enabled = false;
-        if (!['json', 'csv', 'gsheet'].includes(ds.type)) ds.type = 'json';
+        if (!['json', 'csv', 'gsheet', 'rss'].includes(ds.type)) ds.type = 'json';
         if (typeof ds.url !== 'string') ds.url = '';
         const floor = OGrafTemplate.MIN_DATA_SOURCE_INTERVAL_MS;
         const ms = Number(ds.intervalMs);
@@ -845,7 +845,7 @@ export class OGrafTemplate {
     updateDataSource(patch = {}) {
         const ds = this.getDataSource();
         if ('enabled' in patch) ds.enabled = !!patch.enabled;
-        if ('type' in patch && ['json', 'csv', 'gsheet'].includes(patch.type)) {
+        if ('type' in patch && ['json', 'csv', 'gsheet', 'rss'].includes(patch.type)) {
             ds.type = patch.type;
         }
         if ('url' in patch) ds.url = String(patch.url == null ? '' : patch.url);
@@ -1144,8 +1144,11 @@ export default class ${className} extends HTMLElement {
     // Resolve which mapped values are present in a fetched feed payload and
     // return a patch of { dataInputKey: value } for the MAPPED keys only. JSON
     // (v1): top-level key lookup. CSV/gsheet (v1): first data row, mapped by
-    // header column NAME or 0-based column INDEX. Nested JSON paths, arrays,
-    // multiple rows, and type coercion are deferred.
+    // header column NAME or 0-based column INDEX. RSS/Atom (v1): the feed's
+    // items, mapped by item field NAME (e.g. title, description, link, pubDate),
+    // defaulting to the latest item; a "N.field" reference selects item N
+    // (0-based) so several inputs can show several headlines. Nested JSON paths,
+    // arrays, and type coercion are deferred.
     mapFeedToData(parsed) {
         const ds = this.dataSource || {};
         const mapping = ds.mapping || {};
@@ -1157,6 +1160,22 @@ export default class ${className} extends HTMLElement {
                 if (field !== '' && field != null && field in parsed) {
                     patch[key] = parsed[field];
                 }
+            }
+            return patch;
+        }
+        if (ds.type === 'rss') {
+            // parsed is { items: [ { <field>: value, ... }, ... ] }, newest first.
+            const items = (parsed && Array.isArray(parsed.items)) ? parsed.items : [];
+            if (items.length === 0) return patch;
+            for (const key of Object.keys(mapping)) {
+                const ref = String(mapping[key]);
+                if (ref === '') continue;
+                // "N.field" selects item N (0-based); a bare "field" means item 0.
+                const m = ref.match(/^(\\d+)\\.(.+)$/);
+                const idx = m ? Number(m[1]) : 0;
+                const field = m ? m[2] : ref;
+                const item = items[idx];
+                if (item && field in item) patch[key] = item[field];
             }
             return patch;
         }
@@ -1219,6 +1238,45 @@ export default class ${className} extends HTMLElement {
         return { headers, rows };
     }
 
+    // Parse an RSS 2.0 or Atom feed into { items: [ { <field>: value, ... } ] }
+    // in document order (feeds list newest first). Each item/entry child element
+    // becomes a field keyed by its local name (so namespaced elements like
+    // dc:creator map to "creator"); an Atom <link href="..."> contributes its
+    // href, while an RSS <link>url</link> contributes its text. Uses DOMParser,
+    // a standard browser global available in any OGraf renderer. A malformed or
+    // non-XML document yields { items: [] } so a bad poll keeps last-good data.
+    parseRss(text) {
+        if (typeof DOMParser !== 'function') return { items: [] };
+        let doc;
+        try {
+            doc = new DOMParser().parseFromString(text, 'application/xml');
+        } catch (e) {
+            return { items: [] };
+        }
+        if (!doc || doc.getElementsByTagName('parsererror').length > 0) {
+            return { items: [] };
+        }
+        // RSS uses <item>; Atom uses <entry>. Prefer whichever the feed has.
+        let nodes = doc.getElementsByTagName('item');
+        if (nodes.length === 0) nodes = doc.getElementsByTagName('entry');
+        const items = [];
+        for (let i = 0; i < nodes.length; i++) {
+            const item = {};
+            const children = nodes[i].children || [];
+            for (let j = 0; j < children.length; j++) {
+                const child = children[j];
+                const name = child.localName;
+                if (!name) continue;
+                const href = child.getAttribute ? child.getAttribute('href') : null;
+                const value = String(href || child.textContent || '').trim();
+                // First occurrence wins so multiple Atom <link>s do not clobber.
+                if (!(name in item)) item[name] = value;
+            }
+            items.push(item);
+        }
+        return { items };
+    }
+
     // Fetch the configured feed once, parse per type, map to data inputs, and
     // merge through applyData. On ANY failure (network, CORS, HTTP status,
     // parse) it keeps the last-good data and returns without blanking, so the
@@ -1243,6 +1301,8 @@ export default class ${className} extends HTMLElement {
             let parsed;
             if (ds.type === 'json') {
                 parsed = JSON.parse(text);
+            } else if (ds.type === 'rss') {
+                parsed = this.parseRss(text);
             } else {
                 parsed = this.parseCsv(text);
             }
