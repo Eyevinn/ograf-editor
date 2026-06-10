@@ -496,6 +496,33 @@ export class PreviewEngine {
         }
     }
 
+    // Step a multi-step graphic in the preview by calling playAction with the
+    // given params (e.g. { delta: 1 } next, { delta: -1 } prev, { goto: n }).
+    // Mirrors play(): it lazily creates the preview content, then forwards the
+    // params so the GAP-C step navigator can drive the live component. Returns
+    // the action result ({ currentStep }) so the caller can reflect the step.
+    async step(params = {}) {
+        if (!this.previewFrame || !this.currentTemplate) return null;
+        try {
+            if (!this.previewContentCreated) {
+                await this.createPreviewContent();
+                this.previewContentCreated = true;
+            }
+            if (this.currentComponent && typeof this.currentComponent.playAction === 'function') {
+                const result = await this.currentComponent.playAction(params);
+                this.isPlaying = true;
+                this.updateControlButtons();
+                return result;
+            }
+            this.showWebComponentError('Web component not properly initialized',
+                new Error('playAction method not available on component'));
+            return null;
+        } catch (error) {
+            this.showWebComponentError('Failed to step preview', error);
+            return null;
+        }
+    }
+
     async stop() {
         if (!this.previewFrame || !this.currentTemplate) return;
 

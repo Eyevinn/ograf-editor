@@ -190,11 +190,14 @@ export class PropertyPanel {
             ${this.renderDataInputsSection(template)}
 
             ${this.renderLiveDataSection(template)}
+
+            ${this.renderStepsSection(template)}
         `;
 
         this.setupAnimationEventListeners();
         this.setupDataInputEventListeners();
         this.setupLiveDataEventListeners();
+        this.setupStepsEventListeners();
         this.restoreDataInputFocus();
         this.setupCollapsibleSections(container);
     }
@@ -254,7 +257,7 @@ export class PropertyPanel {
     // collapsed since it is the least frequently touched and the tallest.
     setupCollapsibleSections(container) {
         if (!this.collapsedSections) {
-            this.collapsedSections = new Set(['animation', 'livedata']);
+            this.collapsedSections = new Set(['animation', 'livedata', 'steps']);
         }
         const sections = container.querySelectorAll('.property-section.collapsible');
         sections.forEach(section => {
@@ -1082,6 +1085,224 @@ export class PropertyPanel {
             errorEl.textContent = '';
             errorEl.hidden = true;
         }
+    }
+
+    // ---- Multi-step authoring (GAP-C) -------------------------------------
+
+    // Build the "Steps" section. With no steps the graphic is single-step and we
+    // show a one-line invitation to add one. With N steps we show a reorderable
+    // list, an editor for the selected step (rename, per-element visibility,
+    // per-data-input overrides), and a Prev/Next navigator that drives the live
+    // Preview. this.selectedStepIndex is the step being edited (panel state).
+    renderStepsSection(template) {
+        const steps = template.getSteps().steps;
+        const n = steps.length;
+
+        if (n === 0) {
+            this.selectedStepIndex = null;
+        } else if (this.selectedStepIndex == null || this.selectedStepIndex >= n) {
+            this.selectedStepIndex = Math.min(this.selectedStepIndex == null ? 0 : this.selectedStepIndex, n - 1);
+            if (this.selectedStepIndex < 0) this.selectedStepIndex = 0;
+        }
+
+        const list = n === 0
+            ? `<p class="data-input-empty">Single-step graphic. Add a step to make it click-through (bullet builds, reveals, rundown steps).</p>`
+            : steps.map((step, i) => `
+                <div class="step-row ${i === this.selectedStepIndex ? 'active' : ''}" role="group" aria-label="Step ${i + 1}">
+                    <button type="button" class="step-select" data-step-select="${i}" aria-pressed="${i === this.selectedStepIndex}"><span class="step-index">${i + 1}</span> ${this.escapeHtml(step.name)}</button>
+                    <span class="step-row-actions">
+                        <button type="button" class="step-btn" data-step-up="${i}" ${i === 0 ? 'disabled' : ''} title="Move up" aria-label="Move step ${i + 1} up">&#9650;</button>
+                        <button type="button" class="step-btn" data-step-down="${i}" ${i === n - 1 ? 'disabled' : ''} title="Move down" aria-label="Move step ${i + 1} down">&#9660;</button>
+                        <button type="button" class="step-btn step-btn-danger" data-step-remove="${i}" title="Remove" aria-label="Remove step ${i + 1}">&times;</button>
+                    </span>
+                </div>
+            `).join('');
+
+        const editor = (n > 0 && this.selectedStepIndex != null)
+            ? this.renderStepEditor(template, steps[this.selectedStepIndex], this.selectedStepIndex)
+            : '';
+
+        const nav = n > 0
+            ? `
+                <div class="step-nav" role="group" aria-label="Preview steps">
+                    <button type="button" class="btn btn-secondary step-nav-btn" data-step-nav="prev">Prev</button>
+                    <span class="step-nav-indicator" data-step-nav-indicator aria-live="polite">Step ${this.selectedStepIndex + 1} of ${n}</span>
+                    <button type="button" class="btn btn-secondary step-nav-btn" data-step-nav="next">Next</button>
+                </div>
+                <small class="help-text">Prev/Next drive the live Preview. The graphic transitions to the end after the last step.</small>
+            `
+            : '';
+
+        return `
+            <div class="property-section collapsible" data-section="steps">
+                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Steps</button>
+                <div class="steps-body" role="group" aria-label="Steps">
+                    <p class="section-description">Author a multi-step graphic: each step shows or hides elements and can override data inputs. Stop returns to the start.</p>
+                    <div class="property-group">
+                        <button type="button" class="btn btn-secondary" data-step-add>Add step</button>
+                    </div>
+                    <div class="step-list">${list}</div>
+                    ${editor}
+                    ${nav}
+                </div>
+            </div>
+        `;
+    }
+
+    renderStepEditor(template, step, index) {
+        const elements = template.elements || [];
+        const properties = template.manifest.schema.properties || {};
+        const dataKeys = Object.keys(properties);
+
+        const visRows = elements.length === 0
+            ? `<p class="data-input-empty">No elements to show/hide yet.</p>`
+            : elements.map(el => {
+                const visible = step.visible[el.id] !== false;
+                return `
+                    <label class="data-input-checkbox-label step-visible-row">
+                        <input type="checkbox" data-step-visible="${this.escapeAttr(el.id)}" ${visible ? 'checked' : ''}>
+                        <span>${this.escapeHtml(el.id)}</span>
+                    </label>
+                `;
+            }).join('');
+
+        const dataRows = dataKeys.length === 0
+            ? `<p class="data-input-empty">No data inputs to override.</p>`
+            : dataKeys.map(key => {
+                const prop = properties[key];
+                const label = prop.title || key;
+                const val = typeof step.data[key] === 'string' ? step.data[key] : '';
+                const base = prop.default != null ? String(prop.default) : '';
+                const id = `step-data-${this.escapeAttr(key)}`;
+                return `
+                    <div class="property-group">
+                        <label for="${id}">${this.escapeHtml(label)} ({{${this.escapeHtml(key)}}})</label>
+                        <input type="text" id="${id}" class="property-input" data-step-data="${this.escapeAttr(key)}" value="${this.escapeAttr(val)}" placeholder="${this.escapeAttr(base)}" autocomplete="off">
+                    </div>
+                `;
+            }).join('');
+
+        return `
+            <div class="step-editor" role="group" aria-label="Edit step ${index + 1}">
+                <div class="property-group">
+                    <label for="step-rename-input">Step name</label>
+                    <input type="text" id="step-rename-input" class="property-input" data-step-rename value="${this.escapeAttr(step.name)}" autocomplete="off">
+                </div>
+                <div class="property-group">
+                    <label>Visible elements</label>
+                    <div class="step-visible-list">${visRows}</div>
+                    <small class="help-text">Unchecked elements are hidden at this step.</small>
+                </div>
+                <div class="property-group">
+                    <label>Data overrides for this step</label>
+                    ${dataRows}
+                    <small class="help-text">Leave blank to use the base / operator value.</small>
+                </div>
+            </div>
+        `;
+    }
+
+    // Persist + regenerate + reload after a step change, mirroring updateLiveData.
+    regenerateStepsAndReload(template) {
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+    }
+
+    setupStepsEventListeners() {
+        const container = this.container;
+        const template = () => this.templateManager.getCurrentTemplate();
+
+        const addBtn = container.querySelector('[data-step-add]');
+        if (addBtn) addBtn.addEventListener('click', () => {
+            const t = template();
+            if (!t) return;
+            t.addStep();
+            this.selectedStepIndex = t.getSteps().steps.length - 1;
+            this.regenerateStepsAndReload(t);
+            this.render();
+        });
+
+        container.querySelectorAll('[data-step-select]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.selectedStepIndex = Number(btn.dataset.stepSelect);
+                this.render();
+            });
+        });
+
+        const reorder = (attr, offset) => {
+            container.querySelectorAll(`[data-step-${attr}]`).forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const t = template();
+                    if (!t) return;
+                    const i = Number(btn.dataset[attr === 'up' ? 'stepUp' : 'stepDown']);
+                    const dest = t.moveStep(i, i + offset);
+                    if (this.selectedStepIndex === i && dest >= 0) this.selectedStepIndex = dest;
+                    this.regenerateStepsAndReload(t);
+                    this.render();
+                });
+            });
+        };
+        reorder('up', -1);
+        reorder('down', 1);
+
+        container.querySelectorAll('[data-step-remove]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const t = template();
+                if (!t) return;
+                t.removeStep(Number(btn.dataset.stepRemove));
+                this.regenerateStepsAndReload(t);
+                this.render();
+            });
+        });
+
+        const rename = container.querySelector('[data-step-rename]');
+        if (rename) {
+            rename.addEventListener('change', () => {
+                if (!rename.isConnected) return;
+                const t = template();
+                if (!t || this.selectedStepIndex == null) return;
+                t.renameStep(this.selectedStepIndex, rename.value);
+                this.regenerateStepsAndReload(t);
+                this.render();
+            });
+        }
+
+        container.querySelectorAll('[data-step-visible]').forEach(cb => {
+            cb.addEventListener('change', () => {
+                const t = template();
+                if (!t || this.selectedStepIndex == null) return;
+                t.setStepVisibility(this.selectedStepIndex, cb.dataset.stepVisible, cb.checked);
+                this.regenerateStepsAndReload(t);
+            });
+        });
+
+        container.querySelectorAll('[data-step-data]').forEach(input => {
+            input.addEventListener('change', () => {
+                if (!input.isConnected) return;
+                const t = template();
+                if (!t || this.selectedStepIndex == null) return;
+                t.setStepData(this.selectedStepIndex, input.dataset.stepData, input.value);
+                this.regenerateStepsAndReload(t);
+            });
+        });
+
+        container.querySelectorAll('[data-step-nav]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!this.previewEngine) return;
+                const dir = btn.dataset.stepNav;
+                const result = await this.previewEngine.step({ delta: dir === 'prev' ? -1 : 1 });
+                const indicator = container.querySelector('[data-step-nav-indicator]');
+                const t = template();
+                const n = t ? t.getSteps().steps.length : 0;
+                if (indicator) {
+                    const cs = result && typeof result.currentStep === 'number' ? result.currentStep : null;
+                    indicator.textContent = cs == null ? `Ended (${n} steps)` : `Step ${cs + 1} of ${n}`;
+                }
+            });
+        });
     }
 
     escapeHtml(value) {
