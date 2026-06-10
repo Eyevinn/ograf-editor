@@ -50,6 +50,34 @@ export class OGrafTemplate {
         // guardrail flag: once a lane is hand-edited in Advanced it is `true`, and
         // re-applying a Simple preset to it requires explicit confirmation.
         this.manifest.v_ografEditorTimeline = { version: 1, elements: {} };
+
+        // Live data source configuration. Stored on the manifest under the
+        // vendor key v_ografEditorDataSource (additionalProperties:false safe via
+        // the ^v_.* patternProperties allowance, passed through buildManifest).
+        // OGraf data is push-only (load/updateAction); this is an EDITOR-side
+        // convenience: the generated component polls a feed and updates ITSELF
+        // through the same merge+render path the controller's updateAction uses
+        // (last-writer-wins per key). The poller only writes MAPPED keys, so a
+        // manually pushed key is never clobbered by a feed that does not map it.
+        // Shape:
+        //   { enabled:false, type:'json'|'csv'|'gsheet', url:'', intervalMs:5000,
+        //     mapping:{ <dataInputKey>: <feedField|columnName|columnIndex> } }
+        // mapping keys must be existing schema.properties keys; a blank/absent
+        // mapping value means that input stays manual.
+        this.manifest.v_ografEditorDataSource = {
+            enabled: false,
+            type: 'json',
+            url: '',
+            intervalMs: 5000,
+            mapping: {}
+        };
+    }
+
+    // The smallest poll interval we allow (ms). A faster poll hammers the feed
+    // and the renderer for no on-air benefit, so we floor here at the model layer
+    // regardless of what a caller or an imported manifest asks for.
+    static get MIN_DATA_SOURCE_INTERVAL_MS() {
+        return 1000;
     }
 
     // Named easing presets the timeline UI offers, stored as the CSS easing
@@ -365,6 +393,13 @@ export class OGrafTemplate {
 
     removeProperty(name) {
         delete this.manifest.schema.properties[name];
+        // Drop any live-data mapping for the removed input so the embedded config
+        // never maps a key the component cannot resolve (mirrors how removeElement
+        // drops the timeline lane).
+        const ds = this.manifest.v_ografEditorDataSource;
+        if (ds && ds.mapping && name in ds.mapping) {
+            delete ds.mapping[name];
+        }
     }
 
     // Rename a schema property key while preserving the key order.
@@ -387,6 +422,16 @@ export class OGrafTemplate {
             }
         }
         this.manifest.schema.properties = rebuilt;
+
+        // Migrate any live-data mapping keyed on the old data-input key, so a
+        // feed binding follows its input through a rename instead of being
+        // silently dropped (mirrors the timeline-lane migration in
+        // renameElementId). The mapping value (feed field/column) is unchanged.
+        const ds = this.manifest.v_ografEditorDataSource;
+        if (ds && ds.mapping && oldKey in ds.mapping) {
+            ds.mapping[newKey] = ds.mapping[oldKey];
+            delete ds.mapping[oldKey];
+        }
         return true;
     }
 
@@ -768,6 +813,88 @@ export class OGrafTemplate {
         return lane.delay;
     }
 
+    // ---- Live data source (v_ografEditorDataSource) ------------------------
+
+    // Always return a well-formed data-source config, repairing older or partial
+    // shapes (e.g. an imported template without the vendor key) the same way
+    // getTimeline() repairs the timeline. The interval is floored and the type
+    // is constrained to the known set so the generated component never embeds a
+    // bad value.
+    getDataSource() {
+        let ds = this.manifest.v_ografEditorDataSource;
+        if (!ds || typeof ds !== 'object') {
+            ds = { enabled: false, type: 'json', url: '', intervalMs: 5000, mapping: {} };
+            this.manifest.v_ografEditorDataSource = ds;
+        }
+        if (typeof ds.enabled !== 'boolean') ds.enabled = false;
+        if (!['json', 'csv', 'gsheet'].includes(ds.type)) ds.type = 'json';
+        if (typeof ds.url !== 'string') ds.url = '';
+        const floor = OGrafTemplate.MIN_DATA_SOURCE_INTERVAL_MS;
+        const ms = Number(ds.intervalMs);
+        ds.intervalMs = Number.isFinite(ms) ? Math.max(floor, Math.round(ms)) : 5000;
+        if (!ds.mapping || typeof ds.mapping !== 'object') ds.mapping = {};
+        return ds;
+    }
+
+    // Patch the data-source config. Recognized keys: enabled, type, url,
+    // intervalMs, mapping. Enabling live data forces supportsNonRealTime=false:
+    // a wall-clock poll is incompatible with deterministic goToTime, so the
+    // template cannot claim non-real-time support while it polls. intervalMs is
+    // floored at MIN_DATA_SOURCE_INTERVAL_MS. After any change we reconcile the
+    // mapping against the current schema so stale keys cannot linger.
+    updateDataSource(patch = {}) {
+        const ds = this.getDataSource();
+        if ('enabled' in patch) ds.enabled = !!patch.enabled;
+        if ('type' in patch && ['json', 'csv', 'gsheet'].includes(patch.type)) {
+            ds.type = patch.type;
+        }
+        if ('url' in patch) ds.url = String(patch.url == null ? '' : patch.url);
+        if ('intervalMs' in patch) {
+            const ms = Number(patch.intervalMs);
+            ds.intervalMs = Number.isFinite(ms)
+                ? Math.max(OGrafTemplate.MIN_DATA_SOURCE_INTERVAL_MS, Math.round(ms))
+                : ds.intervalMs;
+        }
+        if ('mapping' in patch && patch.mapping && typeof patch.mapping === 'object') {
+            ds.mapping = { ...patch.mapping };
+        }
+        // Enabling live data forces supportsNonRealTime=false (see method doc).
+        if (ds.enabled) {
+            this.manifest.supportsNonRealTime = false;
+        }
+        this.reconcileDataSourceMapping();
+        return ds;
+    }
+
+    // Set or clear a single mapping entry. A blank/whitespace-only field means
+    // "manual" for that input, so we delete the entry rather than store "".
+    setDataSourceMapping(dataInputKey, feedField) {
+        const ds = this.getDataSource();
+        const value = String(feedField == null ? '' : feedField).trim();
+        if (value === '') {
+            delete ds.mapping[dataInputKey];
+        } else {
+            ds.mapping[dataInputKey] = value;
+        }
+        return ds.mapping;
+    }
+
+    // Drop mapping entries whose key is no longer an existing data input. Called
+    // after schema edits so the embedded config never maps a key the component
+    // cannot resolve. Returns the list of dropped keys.
+    reconcileDataSourceMapping() {
+        const ds = this.getDataSource();
+        const properties = this.manifest.schema.properties || {};
+        const dropped = [];
+        for (const key of Object.keys(ds.mapping)) {
+            if (!(key in properties)) {
+                delete ds.mapping[key];
+                dropped.push(key);
+            }
+        }
+        return dropped;
+    }
+
     // The real length (ms) of an action across all elements: max over every
     // lane of (delay + last keyframe time). This is what feeds actionDurations
     // so the renderer schedules play/stop honestly.
@@ -893,6 +1020,12 @@ export class OGrafTemplate {
         // animates from via the Web Animations API.
         const elementsData = JSON.stringify(this.elements);
         const timelineData = JSON.stringify(this.getTimeline());
+        // Embed the live-data config so the generated component is portable and
+        // self-contained: it reads this baked config and polls on its own, with
+        // no editor runtime present. Reconcile the mapping first so it never
+        // references a data input that no longer exists.
+        this.reconcileDataSourceMapping();
+        const dataSourceData = JSON.stringify(this.getDataSource());
 
         const className = this.safeClassName();
 
@@ -950,6 +1083,204 @@ export default class ${className} extends HTMLElement {
         // Live Animation objects currently running, so a new action can cancel
         // the previous one cleanly instead of fighting it.
         this.runningAnimations = [];
+
+        // ---- Live data binding (editor-side, self-contained) ----------------
+        // OGraf data is push-only; this baked config lets the component poll an
+        // external feed and update ITSELF through the same merge+render path the
+        // controller's updateAction uses (last-writer-wins per key). The poller
+        // only ever writes MAPPED keys, so a controller-pushed key is never
+        // overwritten by a feed that does not map it.
+        this.dataSource = ${dataSourceData};
+        // Timer + abort lifecycle. The timer starts on load and is fully torn
+        // down on stop AND dispose. disposed makes a late in-flight fetch a no-op
+        // so a response that resolves after teardown cannot write stale data.
+        this.pollTimer = null;
+        this.pollAbort = null;
+        this.disposed = false;
+        // Keep the last successfully fetched+mapped data so a failed poll
+        // (network/CORS/parse/timeout) keeps the last good values on air instead
+        // of blanking the graphic.
+        this.lastGoodLiveData = {};
+    }
+
+    // Merge a partial data object into this.data and re-render. This is the ONE
+    // merge+render path; both updateAction (controller) and the live poller call
+    // it, so there is a single source of truth and last-writer-wins per key.
+    // A poll-driven re-render must NOT retrigger the in/out animation: if an
+    // action animation is currently running we update the data and render but do
+    // not touch runningAnimations, so the in/out tween is never restarted.
+    applyData(patch) {
+        if (!patch || typeof patch !== 'object') return;
+        this.data = { ...this.data, ...patch };
+        // A full render() rebuilds shadowRoot.innerHTML, which would detach the
+        // nodes a running in/out animation is attached to and snap the graphic
+        // to its resting state mid-tween. So when an action animation is in
+        // flight, refresh the data into the existing nodes IN PLACE instead of
+        // re-rendering, leaving runningAnimations and their WAAPI effects intact.
+        if (this.runningAnimations && this.runningAnimations.length > 0) {
+            this.refreshDataInPlace();
+        } else {
+            this.render();
+        }
+    }
+
+    // Re-interpolate every element's data-bound content into its existing node
+    // without rebuilding the DOM, so a data update during a running animation
+    // does not detach the animating nodes. Only text content and image src carry
+    // data tokens; static elements (rect/circle) have nothing to refresh.
+    refreshDataInPlace() {
+        if (!this.shadowRoot) return;
+        this.elements.forEach(element => {
+            const node = this.shadowRoot.querySelector('.element-' + element.id);
+            if (!node) return;
+            if (element.type === 'text') {
+                node.innerHTML = this.interpolateContent(element.content || '');
+            } else if (element.type === 'image') {
+                node.setAttribute('src', this.interpolateContent(element.content || '', 'src'));
+            }
+        });
+    }
+
+    // Resolve which mapped values are present in a fetched feed payload and
+    // return a patch of { dataInputKey: value } for the MAPPED keys only. JSON
+    // (v1): top-level key lookup. CSV/gsheet (v1): first data row, mapped by
+    // header column NAME or 0-based column INDEX. Nested JSON paths, arrays,
+    // multiple rows, and type coercion are deferred.
+    mapFeedToData(parsed) {
+        const ds = this.dataSource || {};
+        const mapping = ds.mapping || {};
+        const patch = {};
+        if (ds.type === 'json') {
+            if (!parsed || typeof parsed !== 'object') return patch;
+            for (const key of Object.keys(mapping)) {
+                const field = mapping[key];
+                if (field !== '' && field != null && field in parsed) {
+                    patch[key] = parsed[field];
+                }
+            }
+            return patch;
+        }
+        // CSV / gsheet: parsed is { headers:[...], rows:[[...]] }.
+        if (!parsed || !Array.isArray(parsed.rows) || parsed.rows.length === 0) {
+            return patch;
+        }
+        const headers = Array.isArray(parsed.headers) ? parsed.headers : [];
+        const firstRow = parsed.rows[0];
+        for (const key of Object.keys(mapping)) {
+            const ref = String(mapping[key]);
+            if (ref === '') continue;
+            let colIndex = headers.indexOf(ref);
+            if (colIndex === -1 && /^\\d+$/.test(ref)) {
+                colIndex = Number(ref);
+            }
+            if (colIndex >= 0 && colIndex < firstRow.length) {
+                patch[key] = firstRow[colIndex];
+            }
+        }
+        return patch;
+    }
+
+    // Parse a standard comma CSV (RFC-ish: quoted fields, doubled quotes,
+    // commas/newlines inside quotes). First row is the header. Returns
+    // { headers:[...], rows:[[...], ...] }. Custom delimiters are deferred.
+    parseCsv(text) {
+        const records = [];
+        let field = '';
+        let record = [];
+        let inQuotes = false;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (inQuotes) {
+                if (c === '"') {
+                    if (text[i + 1] === '"') { field += '"'; i++; }
+                    else { inQuotes = false; }
+                } else {
+                    field += c;
+                }
+            } else if (c === '"') {
+                inQuotes = true;
+            } else if (c === ',') {
+                record.push(field); field = '';
+            } else if (c === '\\n' || c === '\\r') {
+                if (c === '\\r' && text[i + 1] === '\\n') i++;
+                record.push(field); field = '';
+                records.push(record); record = [];
+            } else {
+                field += c;
+            }
+        }
+        if (field !== '' || record.length > 0) {
+            record.push(field);
+            records.push(record);
+        }
+        const nonEmpty = records.filter(r => !(r.length === 1 && r[0] === ''));
+        const headers = nonEmpty.length > 0 ? nonEmpty[0] : [];
+        const rows = nonEmpty.slice(1);
+        return { headers, rows };
+    }
+
+    // Fetch the configured feed once, parse per type, map to data inputs, and
+    // merge through applyData. On ANY failure (network, CORS, HTTP status,
+    // parse) it keeps the last-good data and returns without blanking, so the
+    // on-air graphic never goes empty on a bad poll. A fetch that resolves after
+    // dispose is dropped (disposed flag). Returns { ok, patch?, error? } so the
+    // editor's Test connection can reuse the same fetch+parse path.
+    async fetchAndApply() {
+        const ds = this.dataSource || {};
+        if (!ds.url) return { ok: false, error: 'No feed URL configured.' };
+        // Abort any in-flight poll so a slow request cannot overlap the next.
+        if (this.pollAbort) { try { this.pollAbort.abort(); } catch (e) { /* ignore */ } }
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        this.pollAbort = controller;
+        try {
+            const res = await fetch(ds.url, controller ? { signal: controller.signal } : {});
+            if (this.disposed) return { ok: false, error: 'disposed' };
+            if (!res.ok) {
+                return { ok: false, error: 'HTTP ' + res.status };
+            }
+            const text = await res.text();
+            if (this.disposed) return { ok: false, error: 'disposed' };
+            let parsed;
+            if (ds.type === 'json') {
+                parsed = JSON.parse(text);
+            } else {
+                parsed = this.parseCsv(text);
+            }
+            const patch = this.mapFeedToData(parsed);
+            // Remember last good, then merge ONLY the mapped keys.
+            this.lastGoodLiveData = { ...this.lastGoodLiveData, ...patch };
+            this.applyData(patch);
+            return { ok: true, patch, parsed };
+        } catch (error) {
+            // Keep last-good data on screen; the next interval retries. A
+            // TypeError from fetch is the usual CORS/network signature.
+            return { ok: false, error: (error && error.message) || String(error) };
+        }
+    }
+
+    // Start the poll loop if live data is enabled and a URL is set. Idempotent:
+    // an existing timer is cleared first so load() during preview cannot stack
+    // timers. Fires once immediately so the preview/air graphic auto-fills
+    // without waiting a full interval, then on the floored interval.
+    startLiveData() {
+        this.stopLiveData();
+        const ds = this.dataSource || {};
+        if (!ds.enabled || !ds.url) return;
+        if (typeof fetch !== 'function') return;
+        const interval = Math.max(1000, Number(ds.intervalMs) || 5000);
+        // Kick off an immediate fetch (do not await; a failure is handled inside).
+        this.fetchAndApply();
+        this.pollTimer = setInterval(() => {
+            if (this.disposed) { this.stopLiveData(); return; }
+            this.fetchAndApply();
+        }, interval);
+    }
+
+    // Tear down the poll loop: clear the interval and abort any in-flight fetch.
+    // Called on stop and dispose. Safe to call when nothing is running.
+    stopLiveData() {
+        if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+        if (this.pollAbort) { try { this.pollAbort.abort(); } catch (e) { /* ignore */ } this.pollAbort = null; }
     }
 
     // OGraf lifecycle: load applies the initial data and renders the graphic.
@@ -964,12 +1295,19 @@ export default class ${className} extends HTMLElement {
         // played graphic shows its pre-animation state (e.g. opacity 0) instead
         // of its visible resting state. Elements with no in-lane stay at rest.
         this.applyInitialState('in');
+        // Start live-data polling on load so the preview/air graphic auto-fills.
+        // No-op when live data is disabled or no URL is set.
+        this.startLiveData();
         return { statusCode: 200 };
     }
 
     async dispose(params = {}) {
         this.isVisible = false;
         this.currentStep = 0;
+        // Fully tear down the live-data poll loop and mark disposed so a fetch
+        // that resolves after this point is a no-op (cannot write stale data).
+        this.disposed = true;
+        this.stopLiveData();
         this.shadowRoot.innerHTML = '';
         return { statusCode: 200 };
     }
@@ -1007,6 +1345,12 @@ export default class ${className} extends HTMLElement {
         this.isVisible = false;
         this.currentStep = 0;
 
+        // Stop polling when the graphic goes off air. The timer restarts on the
+        // next load. We do NOT set disposed here (stop is reversible; dispose is
+        // the permanent teardown), so a fetch already in flight is aborted by
+        // stopLiveData rather than left to write into a stopped component.
+        this.stopLiveData();
+
         // Completely clear the shadow DOM - back to empty state
         this.shadowRoot.innerHTML = '';
         return { statusCode: 200 };
@@ -1014,10 +1358,15 @@ export default class ${className} extends HTMLElement {
 
     async updateAction(params = {}) {
         const { data } = params;
+        // Same merge+render path the live poller uses (applyData), so controller
+        // pushes and feed updates share one path; last-writer-wins per key. If an
+        // action animation is running, applyData updates data + re-renders but
+        // does not restart the in/out tween.
         if (data) {
-            this.data = { ...this.data, ...data };
+            this.applyData(data);
+        } else {
+            this.render();
         }
-        this.render();
         return { statusCode: 200 };
     }
 
