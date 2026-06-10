@@ -439,7 +439,7 @@ customElements.define('${safeId}-graphic', ${className});
                 resolve(e.target.result);
             };
             
-            reader.onerror = (e) => {
+            reader.onerror = () => {
                 reject(new Error('Failed to read file'));
             };
             
