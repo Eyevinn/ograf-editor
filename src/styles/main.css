@@ -13,6 +13,33 @@ body {
     overflow: hidden;
 }
 
+/* Custom scrollbars that match the dark theme, slim, unobtrusive, and
+   consistent across the sidebar, timeline, and code panes. Firefox uses the
+   scrollbar-* properties; Chromium/Safari use the ::-webkit-scrollbar set. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #4a4a4a transparent;
+}
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background-color: #4a4a4a;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: #6a6a6a;
+}
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
 /* Layout */
 #app {
     display: flex;

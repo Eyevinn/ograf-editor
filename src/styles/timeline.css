@@ -77,6 +77,38 @@
     font-size: 0.8rem;
 }
 
+/* In/Out segmented toggle: picks which lane a local Play / Snap previews. */
+.timeline-action-toggle {
+    display: inline-flex;
+    border: 1px solid #505050;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.timeline-toggle-btn {
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    background-color: #333333;
+    color: #d0d0d0;
+    border: none;
+    border-right: 1px solid #505050;
+    cursor: pointer;
+}
+
+.timeline-toggle-btn:last-child { border-right: none; }
+
+.timeline-toggle-btn:hover { background-color: #404040; }
+
+.timeline-toggle-btn.active {
+    background-color: #007acc;
+    color: #ffffff;
+}
+
+.timeline-toggle-btn:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: -2px;
+}
+
 .timeline-body {
     flex: 1;
     min-height: 0;

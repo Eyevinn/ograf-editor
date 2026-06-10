@@ -46,8 +46,18 @@ export class TimelinePanel {
         this.selectedKeyframeIndex = null;
         this.playhead = 0;              // ms
 
+        // Which lane a local Play / Snap previews. The transport In/Out toggle
+        // sets this; it is the authoring choice, independent of the selected
+        // lane in the inspector. Defaults to 'in'.
+        this.previewAction = 'in';      // 'in' | 'out'
+
         // Live local-preview animations running on the canvas nodes.
         this.runningAnimations = [];
+
+        // requestAnimationFrame id for the playhead sweep during a local Play,
+        // tracked so we can cancel it on Stop / re-render / destroy and never
+        // leak or run two loops at once.
+        this.playheadRAF = null;
 
         this.init();
     }
@@ -245,6 +255,12 @@ export class TimelinePanel {
 
     render() {
         if (!this.panel) return;
+        // A full re-render replaces the panel innerHTML, destroying the playhead
+        // node the sweep loop moves. Cancel any in-flight sweep so it does not
+        // keep firing against a stale/absent node (e.g. after collapse or a
+        // template change). The playhead's model value is preserved and
+        // re-rendered at its current position.
+        this.cancelPlayheadSweep();
         this.validateSelection();
         this.applyPanelSize();
         this.panel.classList.toggle('collapsed', this.collapsed);
@@ -262,6 +278,14 @@ export class TimelinePanel {
             `;
         }
 
+        // Preserve scroll positions across the innerHTML rebuild, so selecting
+        // or editing a keyframe (which re-renders) does not snap the timeline
+        // back to the top/left. This, not focus, was the real "scrolls to top".
+        const prevBody = this.panel.querySelector('.timeline-body');
+        const savedTop = prevBody ? prevBody.scrollTop : 0;
+        const savedLeft = prevBody ? prevBody.scrollLeft : 0;
+        const savedLaneLeft = Array.from(this.panel.querySelectorAll('.timeline-lanes-area')).map(el => el.scrollLeft);
+
         this.panel.innerHTML = `
             <div class="timeline-header">
                 <button type="button" class="timeline-toggle" aria-expanded="${!this.collapsed}" aria-controls="timeline-body">
@@ -275,6 +299,12 @@ export class TimelinePanel {
                 ${bodyHtml}
             </div>
         `;
+
+        // Restore the saved scroll positions onto the freshly built nodes.
+        const newBody = this.panel.querySelector('.timeline-body');
+        if (newBody) { newBody.scrollTop = savedTop; newBody.scrollLeft = savedLeft; }
+        const newLanes = this.panel.querySelectorAll('.timeline-lanes-area');
+        savedLaneLeft.forEach((left, i) => { if (newLanes[i]) newLanes[i].scrollLeft = left; });
 
         // The resizer sits at the very top of the panel, above the header.
         if (this.resizer && this.resizer.parentNode !== this.panel) {
@@ -290,8 +320,15 @@ export class TimelinePanel {
     }
 
     renderTransport() {
+        const inActive = this.previewAction === 'in';
         return `
             <div class="timeline-transport" role="group" aria-label="Timeline playback">
+                <div class="timeline-action-toggle" role="group" aria-label="Preview lane">
+                    <button type="button" class="timeline-toggle-btn ${inActive ? 'active' : ''}"
+                            data-preview-action="in" aria-pressed="${inActive}">In</button>
+                    <button type="button" class="timeline-toggle-btn ${inActive ? '' : 'active'}"
+                            data-preview-action="out" aria-pressed="${!inActive}">Out</button>
+                </div>
                 <button type="button" class="btn btn-secondary timeline-btn" data-transport="play">Play</button>
                 <button type="button" class="btn btn-secondary timeline-btn" data-transport="stop">Stop</button>
                 <button type="button" class="btn btn-secondary timeline-btn" data-transport="snap">Snap to end</button>
@@ -484,6 +521,21 @@ export class TimelinePanel {
         transport.forEach(btn => {
             btn.addEventListener('click', () => this.runLocalPreview(btn.dataset.transport));
         });
+
+        // In/Out segmented toggle: picks the lane Play / Snap previews.
+        const actionToggles = this.panel.querySelectorAll('[data-preview-action]');
+        actionToggles.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const next = btn.dataset.previewAction === 'out' ? 'out' : 'in';
+                if (this.previewAction === next) return;
+                this.previewAction = next;
+                // Switching the previewed lane stops any in-flight sweep so the
+                // playhead does not keep advancing toward the old lane's total.
+                this.cancelLocalPreview();
+                this.resetPlayhead();
+                this.render();
+            });
+        });
     }
 
     bindBody() {
@@ -631,6 +683,9 @@ export class TimelinePanel {
 
         playhead.addEventListener('mousedown', (e) => {
             e.preventDefault();
+            // Taking manual control stops any in-flight Play sweep so the two do
+            // not fight over the playhead position.
+            this.cancelPlayheadSweep();
             const track = playhead.parentElement;
             const rect = track.getBoundingClientRect();
             const onMove = (me) => setFromPx(me.clientX - rect.left);
@@ -644,6 +699,8 @@ export class TimelinePanel {
 
         playhead.addEventListener('keydown', (e) => {
             const step = e.shiftKey ? KF_STEP_BIG : KF_STEP;
+            // Any keyboard nudge of the playhead also takes manual control.
+            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) this.cancelPlayheadSweep();
             if (e.key === 'ArrowLeft') { setFromPx(this.msToPx(this.playhead - step)); e.preventDefault(); }
             else if (e.key === 'ArrowRight') { setFromPx(this.msToPx(this.playhead + step)); e.preventDefault(); }
             else if (e.key === 'Home') { setFromPx(0); e.preventDefault(); }
@@ -782,18 +839,31 @@ export class TimelinePanel {
         const canvas = this.visualEditor.canvas;
         if (!canvas) return;
 
+        // Always tear down any prior run (canvas animations + playhead sweep)
+        // before starting a new one, so a second Play never stacks two rAF
+        // loops or two sets of WAAPI animations.
         this.cancelLocalPreview();
 
         if (mode === 'stop') {
-            return; // already cancelled above; nodes return to resting state
+            // Stop returns to resting: nodes were cancelled above; the playhead
+            // goes back to 0.
+            this.resetPlayhead();
+            return;
         }
 
-        const action = 'in'; // Play / Snap run the in-animation; Stop clears it.
+        // Play / Snap preview the lane chosen by the In/Out toggle; Stop clears.
+        const action = this.previewAction === 'out' ? 'out' : 'in';
         const reducedMotion = window.matchMedia
             && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const skip = mode === 'snap';
+        const total = template.computeActionDuration(action);
 
-        if (typeof Element.prototype.animate !== 'function') return;
+        if (typeof Element.prototype.animate !== 'function') {
+            // No WAAPI: still move the playhead to the end so Snap/Play leave a
+            // sensible marker, then bail (nothing to animate on the canvas).
+            this.setPlayheadMs(total);
+            return;
+        }
 
         template.elements.forEach(element => {
             const lane = template.getLane(element.id, action);
@@ -807,11 +877,89 @@ export class TimelinePanel {
                 try { anim.finish(); } catch (e) { /* ignore */ }
             }
         });
+
+        // Drive the orange playhead across the ruler in real time during a
+        // Play. Snap (and reduced-motion) jump straight to the end and still
+        // show the finished animation result above.
+        if (skip || reducedMotion) {
+            this.setPlayheadMs(total);
+        } else {
+            this.startPlayheadSweep(total);
+        }
+    }
+
+    // Animate this.playhead from 0 to totalMs in real (wall-clock) time, moving
+    // the playhead element each frame without re-rendering the whole panel. The
+    // loop stops itself at the end (leaving the playhead parked at totalMs) and
+    // is always cancellable via this.playheadRAF.
+    startPlayheadSweep(totalMs) {
+        const total = Number(totalMs) || 0;
+        // A zero-length action has nothing to sweep: park at 0.
+        if (total <= 0) {
+            this.setPlayheadMs(0);
+            return;
+        }
+        if (typeof requestAnimationFrame !== 'function') {
+            this.setPlayheadMs(total);
+            return;
+        }
+        // Anchor the clock to the first frame's own timestamp so start and
+        // elapsed always come from the same time source (rAF gives a
+        // DOMHighResTimeStamp; mixing it with Date.now() would skew elapsed).
+        let start = null;
+        const tick = (now) => {
+            const t = (typeof now === 'number') ? now : Date.now();
+            if (start === null) start = t;
+            const elapsed = t - start;
+            if (elapsed >= total) {
+                this.playheadRAF = null;
+                this.setPlayheadMs(total);
+                return;
+            }
+            this.setPlayheadMs(elapsed);
+            this.playheadRAF = requestAnimationFrame(tick);
+        };
+        this.playheadRAF = requestAnimationFrame(tick);
+    }
+
+    // Move the playhead to a given ms (clamped to the ruler), updating both the
+    // model value and the DOM node's position + aria, without a full re-render.
+    setPlayheadMs(ms) {
+        const clamped = Math.max(0, Math.min(this.rulerMs(), Math.round(Number(ms) || 0)));
+        this.playhead = clamped;
+        if (!this.panel) return;
+        const node = this.panel.querySelector('.timeline-playhead');
+        if (node) {
+            node.style.left = `${this.msToPx(clamped)}px`;
+            node.setAttribute('aria-valuenow', String(clamped));
+            node.setAttribute('aria-valuetext', `${clamped} milliseconds`);
+        }
+    }
+
+    // Cancel the sweep loop (if any) and reset the playhead to 0. Used by Stop.
+    resetPlayhead() {
+        this.cancelPlayheadSweep();
+        this.setPlayheadMs(0);
+    }
+
+    // Stop just the playhead rAF loop without touching its position.
+    cancelPlayheadSweep() {
+        if (this.playheadRAF !== null) {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.playheadRAF);
+            this.playheadRAF = null;
+        }
     }
 
     cancelLocalPreview() {
         this.runningAnimations.forEach(a => { try { a.cancel(); } catch (e) { /* ignore */ } });
         this.runningAnimations = [];
+        this.cancelPlayheadSweep();
+    }
+
+    // Tear down all live work (canvas animations + playhead sweep). Call when
+    // the panel is removed so the rAF loop never outlives the panel.
+    destroy() {
+        this.cancelLocalPreview();
     }
 
     // Mirror of the generated component's buildLaneEffect so the local preview
