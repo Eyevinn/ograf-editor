@@ -672,22 +672,31 @@ export class TimelinePanel {
     }
 
     bindPlayhead(playhead) {
-        const setFromPx = (px) => {
-            const ms = Math.max(0, Math.min(this.rulerMs(), Math.round(this.pxToMs(px))));
+        // Move just the marker (model value + DOM position + aria), no canvas work.
+        const moveMarker = (ms) => {
             this.playhead = ms;
             playhead.style.left = `${this.msToPx(ms)}px`;
             playhead.setAttribute('aria-valuenow', String(ms));
             playhead.setAttribute('aria-valuetext', `${ms} milliseconds`);
         };
+        const clampMs = (ms) => Math.max(0, Math.min(this.rulerMs(), Math.round(Number(ms) || 0)));
 
         playhead.addEventListener('mousedown', (e) => {
             e.preventDefault();
-            // Taking manual control stops any in-flight Play sweep so the two do
-            // not fight over the playhead position.
-            this.cancelPlayheadSweep();
+            // Build the paused scrub animations once for this drag, then seek
+            // them on every move so the canvas shows the exact frame under the
+            // playhead. beginScrub() also cancels any in-flight Play sweep so the
+            // two never fight over the playhead position.
+            this.beginScrub();
             const track = playhead.parentElement;
             const rect = track.getBoundingClientRect();
-            const onMove = (me) => setFromPx(me.clientX - rect.left);
+            const scrub = (clientX) => {
+                const ms = clampMs(this.pxToMs(clientX - rect.left));
+                moveMarker(ms);
+                this.seekTo(ms);
+            };
+            scrub(e.clientX);
+            const onMove = (me) => scrub(me.clientX);
             const onUp = () => {
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
@@ -697,13 +706,21 @@ export class TimelinePanel {
         });
 
         playhead.addEventListener('keydown', (e) => {
+            const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+            if (!keys.includes(e.key)) return;
+            e.preventDefault();
             const step = e.shiftKey ? KF_STEP_BIG : KF_STEP;
-            // Any keyboard nudge of the playhead also takes manual control.
-            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) this.cancelPlayheadSweep();
-            if (e.key === 'ArrowLeft') { setFromPx(this.msToPx(this.playhead - step)); e.preventDefault(); }
-            else if (e.key === 'ArrowRight') { setFromPx(this.msToPx(this.playhead + step)); e.preventDefault(); }
-            else if (e.key === 'Home') { setFromPx(0); e.preventDefault(); }
-            else if (e.key === 'End') { setFromPx(this.msToPx(this.rulerMs())); e.preventDefault(); }
+            let ms = this.playhead;
+            if (e.key === 'ArrowLeft') ms = this.playhead - step;
+            else if (e.key === 'ArrowRight') ms = this.playhead + step;
+            else if (e.key === 'Home') ms = 0;
+            else if (e.key === 'End') ms = this.rulerMs();
+            ms = clampMs(ms);
+            // Rebuild fresh paused animations each keypress (cheap, and the canvas
+            // may have re-rendered since the last scrub), then seek to the marker.
+            this.beginScrub();
+            moveMarker(ms);
+            this.seekTo(ms);
         });
     }
 
@@ -953,6 +970,43 @@ export class TimelinePanel {
         this.runningAnimations.forEach(a => { try { a.cancel(); } catch (e) { /* ignore */ } });
         this.runningAnimations = [];
         this.cancelPlayheadSweep();
+    }
+
+    // Build paused WAAPI animations for the current preview lane so the playhead
+    // can scrub the canvas. Each element's lane animation is created from the
+    // SAME buildLaneEffect keyframes that Play uses (so a scrubbed frame matches
+    // playback exactly), then paused; seekTo() positions them. Replaces any
+    // in-flight preview/scrub first so we never stack runs.
+    beginScrub() {
+        this.cancelLocalPreview();
+        const template = this.template();
+        if (!template) return;
+        const canvas = this.visualEditor && this.visualEditor.canvas;
+        if (!canvas) return;
+        if (typeof Element.prototype.animate !== 'function') return;
+        const action = this.previewAction === 'out' ? 'out' : 'in';
+        template.elements.forEach(element => {
+            const lane = template.getLane(element.id, action);
+            const effect = this.buildLaneEffect(lane);
+            if (!effect) return;
+            const node = canvas.querySelector(`.graphics-element[data-element-id="${CSS.escape(element.id)}"]`);
+            if (!node) return;
+            const anim = node.animate(effect.keyframes, effect.timing);
+            anim.pause();
+            this.runningAnimations.push(anim);
+        });
+    }
+
+    // Seek every paused scrub animation to ms. currentTime is in the same ms
+    // space as the playhead and the authored keyframes (buildLaneEffect uses an
+    // absolute delay + duration), so a single value positions every element:
+    // fill:'both' holds an element's start frame before its delay and its
+    // resting frame after it ends.
+    seekTo(ms) {
+        const t = Math.max(0, Math.round(Number(ms) || 0));
+        this.runningAnimations.forEach(anim => {
+            try { anim.currentTime = t; } catch (e) { /* ignore */ }
+        });
     }
 
     // Show or hide the whole panel. The Preview tab has its own Play/Stop
