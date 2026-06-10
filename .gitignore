@@ -77,3 +77,10 @@ jspm_packages/
 
 # Serverless directories
 .serverless
+
+# Claude Code agent-team runtime state (not committed)
+.claude
+CLAUDE.md
+
+#
+docs
