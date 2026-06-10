@@ -1120,11 +1120,11 @@ export class PropertyPanel {
 
             const sizeKb = Math.round(file.size / 1024);
             if (overLimit) {
-                const msg = `Embedded ${this.escapeHtml(file.name)} (${sizeKb} KB). This is large; it will bloat the template file and may slow autosave.`;
+                const msg = `Embedded ${file.name} (${sizeKb} KB). This is large; it will bloat the template file and may slow autosave.`;
                 this.setImageFileNote(msg, 'warn');
                 this.notifyError(`Embedded a large image (${sizeKb} KB). Large images bloat the template and may slow autosave.`);
             } else {
-                this.setImageFileNote(`Embedded ${this.escapeHtml(file.name)} (${sizeKb} KB).`, 'ok');
+                this.setImageFileNote(`Embedded ${file.name} (${sizeKb} KB).`, 'ok');
             }
 
             // Re-render so the URL field shows the new data URI value.
