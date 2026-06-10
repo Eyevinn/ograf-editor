@@ -421,6 +421,7 @@ export class PropertyPanel {
         const placeholderFor = (type) => {
             if (type === 'csv') return 'https://example.com/feed.csv';
             if (type === 'gsheet') return 'https://docs.google.com/.../pub?output=csv';
+            if (type === 'rss') return 'https://example.com/feed.xml';
             return 'https://example.com/feed.json';
         };
 
@@ -432,6 +433,7 @@ export class PropertyPanel {
                         <option value="json" ${ds.type === 'json' ? 'selected' : ''}>JSON URL</option>
                         <option value="csv" ${ds.type === 'csv' ? 'selected' : ''}>CSV URL</option>
                         <option value="gsheet" ${ds.type === 'gsheet' ? 'selected' : ''}>Google Sheet (published as CSV)</option>
+                        <option value="rss" ${ds.type === 'rss' ? 'selected' : ''}>RSS / Atom feed</option>
                     </select>
                 </div>
                 <div class="property-group">
@@ -486,9 +488,14 @@ export class PropertyPanel {
             `;
         }
 
-        const fieldPlaceholder = ds.type === 'json'
-            ? 'key (e.g. headline)'
-            : 'column name or number';
+        let fieldPlaceholder;
+        if (ds.type === 'json') {
+            fieldPlaceholder = 'key (e.g. headline)';
+        } else if (ds.type === 'rss') {
+            fieldPlaceholder = 'item field (e.g. title) or 1.title';
+        } else {
+            fieldPlaceholder = 'column name or number';
+        }
 
         const rows = keys.map(key => {
             const prop = properties[key];
@@ -636,12 +643,15 @@ export class PropertyPanel {
                 fields = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
                     ? Object.keys(parsed)
                     : [];
+            } else if (ds.type === 'rss') {
+                fields = this.parseRssFields(text);
             } else {
                 fields = this.parseCsvHeaders(text);
             }
             const now = new Date().toLocaleTimeString();
+            const noun = ds.type === 'csv' || ds.type === 'gsheet' ? 'columns' : 'fields';
             const detected = fields.length
-                ? ` Detected ${ds.type === 'json' ? 'fields' : 'columns'}: ${fields.slice(0, 20).join(', ')}.`
+                ? ` Detected ${noun}: ${fields.slice(0, 20).join(', ')}.`
                 : ' No fields detected; check the feed format.';
             setStatus(`Connected. Updated ${now}.${detected}`);
         } catch (error) {
@@ -681,6 +691,31 @@ export class PropertyPanel {
         }
         headers.push(field);
         return headers.filter(h => h !== '');
+    }
+
+    // Read the field names of the first item/entry of an RSS or Atom feed for the
+    // Test-connection preview, so the operator sees what they can map (title,
+    // description, link, pubDate, ...). The generated component owns the full
+    // parser; this only surfaces names. Returns [] on a malformed/empty feed.
+    parseRssFields(text) {
+        if (typeof DOMParser !== 'function') return [];
+        let doc;
+        try {
+            doc = new DOMParser().parseFromString(String(text), 'application/xml');
+        } catch (e) {
+            return [];
+        }
+        if (!doc || doc.getElementsByTagName('parsererror').length > 0) return [];
+        let nodes = doc.getElementsByTagName('item');
+        if (nodes.length === 0) nodes = doc.getElementsByTagName('entry');
+        if (nodes.length === 0) return [];
+        const children = nodes[0].children || [];
+        const names = [];
+        for (let i = 0; i < children.length; i++) {
+            const name = children[i].localName;
+            if (name && !names.includes(name)) names.push(name);
+        }
+        return names;
     }
 
     renderElementProperties(container, element) {

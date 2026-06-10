@@ -856,7 +856,7 @@ export class OGrafTemplate {
             this.manifest.v_ografEditorDataSource = ds;
         }
         if (typeof ds.enabled !== 'boolean') ds.enabled = false;
-        if (!['json', 'csv', 'gsheet'].includes(ds.type)) ds.type = 'json';
+        if (!['json', 'csv', 'gsheet', 'rss'].includes(ds.type)) ds.type = 'json';
         if (typeof ds.url !== 'string') ds.url = '';
         const floor = OGrafTemplate.MIN_DATA_SOURCE_INTERVAL_MS;
         const ms = Number(ds.intervalMs);
@@ -874,7 +874,7 @@ export class OGrafTemplate {
     updateDataSource(patch = {}) {
         const ds = this.getDataSource();
         if ('enabled' in patch) ds.enabled = !!patch.enabled;
-        if ('type' in patch && ['json', 'csv', 'gsheet'].includes(patch.type)) {
+        if ('type' in patch && ['json', 'csv', 'gsheet', 'rss'].includes(patch.type)) {
             ds.type = patch.type;
         }
         if ('url' in patch) ds.url = String(patch.url == null ? '' : patch.url);
@@ -1310,8 +1310,11 @@ export default class ${className} extends HTMLElement {
     // Resolve which mapped values are present in a fetched feed payload and
     // return a patch of { dataInputKey: value } for the MAPPED keys only. JSON
     // (v1): top-level key lookup. CSV/gsheet (v1): first data row, mapped by
-    // header column NAME or 0-based column INDEX. Nested JSON paths, arrays,
-    // multiple rows, and type coercion are deferred.
+    // header column NAME or 0-based column INDEX. RSS/Atom (v1): the feed's
+    // items, mapped by item field NAME (e.g. title, description, link, pubDate),
+    // defaulting to the latest item; a "N.field" reference selects item N
+    // (0-based) so several inputs can show several headlines. Nested JSON paths,
+    // arrays, and type coercion are deferred.
     mapFeedToData(parsed) {
         const ds = this.dataSource || {};
         const mapping = ds.mapping || {};
@@ -1323,6 +1326,22 @@ export default class ${className} extends HTMLElement {
                 if (field !== '' && field != null && field in parsed) {
                     patch[key] = parsed[field];
                 }
+            }
+            return patch;
+        }
+        if (ds.type === 'rss') {
+            // parsed is { items: [ { <field>: value, ... }, ... ] }, newest first.
+            const items = (parsed && Array.isArray(parsed.items)) ? parsed.items : [];
+            if (items.length === 0) return patch;
+            for (const key of Object.keys(mapping)) {
+                const ref = String(mapping[key]);
+                if (ref === '') continue;
+                // "N.field" selects item N (0-based); a bare "field" means item 0.
+                const m = ref.match(/^(\\d+)\\.(.+)$/);
+                const idx = m ? Number(m[1]) : 0;
+                const field = m ? m[2] : ref;
+                const item = items[idx];
+                if (item && field in item) patch[key] = item[field];
             }
             return patch;
         }
@@ -1385,6 +1404,45 @@ export default class ${className} extends HTMLElement {
         return { headers, rows };
     }
 
+    // Parse an RSS 2.0 or Atom feed into { items: [ { <field>: value, ... } ] }
+    // in document order (feeds list newest first). Each item/entry child element
+    // becomes a field keyed by its local name (so namespaced elements like
+    // dc:creator map to "creator"); an Atom <link href="..."> contributes its
+    // href, while an RSS <link>url</link> contributes its text. Uses DOMParser,
+    // a standard browser global available in any OGraf renderer. A malformed or
+    // non-XML document yields { items: [] } so a bad poll keeps last-good data.
+    parseRss(text) {
+        if (typeof DOMParser !== 'function') return { items: [] };
+        let doc;
+        try {
+            doc = new DOMParser().parseFromString(text, 'application/xml');
+        } catch (e) {
+            return { items: [] };
+        }
+        if (!doc || doc.getElementsByTagName('parsererror').length > 0) {
+            return { items: [] };
+        }
+        // RSS uses <item>; Atom uses <entry>. Prefer whichever the feed has.
+        let nodes = doc.getElementsByTagName('item');
+        if (nodes.length === 0) nodes = doc.getElementsByTagName('entry');
+        const items = [];
+        for (let i = 0; i < nodes.length; i++) {
+            const item = {};
+            const children = nodes[i].children || [];
+            for (let j = 0; j < children.length; j++) {
+                const child = children[j];
+                const name = child.localName;
+                if (!name) continue;
+                const href = child.getAttribute ? child.getAttribute('href') : null;
+                const value = String(href || child.textContent || '').trim();
+                // First occurrence wins so multiple Atom <link>s do not clobber.
+                if (!(name in item)) item[name] = value;
+            }
+            items.push(item);
+        }
+        return { items };
+    }
+
     // Fetch the configured feed once, parse per type, map to data inputs, and
     // merge through applyData. On ANY failure (network, CORS, HTTP status,
     // parse) it keeps the last-good data and returns without blanking, so the
@@ -1409,6 +1467,8 @@ export default class ${className} extends HTMLElement {
             let parsed;
             if (ds.type === 'json') {
                 parsed = JSON.parse(text);
+            } else if (ds.type === 'rss') {
+                parsed = this.parseRss(text);
             } else {
                 parsed = this.parseCsv(text);
             }
@@ -1816,7 +1876,7 @@ export default class ${className} extends HTMLElement {
 
         switch (element.type) {
             case 'text': {
-                // Text context: escape the resolved data value.
+                // Text context: the whole content (literal + resolved tokens) is escaped.
                 const content = this.interpolateContent(element.content || '');
                 return \`<div class="element element-\${element.id}" \${idAttr} style="\${allStyles}">\${content}</div>\`;
             }
@@ -1836,18 +1896,38 @@ export default class ${className} extends HTMLElement {
         }
     }
 
+    // All authored content is untrusted at render time, so escape/validate the
+    // WHOLE string, not only the {{token}} substitutions. Without this, literal
+    // authored markup (e.g. a text element whose content is "<img onerror=...>"
+    // with no token) or a literal hostile image src would bypass escaping
+    // entirely, since a token-only replace leaves the literal segments untouched.
     interpolateContent(content, context = 'text') {
-        const result = content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
-            // The active step's data overlay wins over the base operator/feed
-            // data; then the base data; then the unresolved placeholder is left
-            // untouched (then escaped). Presence checks keep empty-string/0.
-            const stepData = this.activeStepData || {};
-            const value = key in stepData
-                ? stepData[key]
-                : (key in this.data ? this.data[key] : match);
-            return context === 'src' ? safeSrc(value) : escapeHtml(value);
+        // Token resolution layers the active step's data overlay (GAP-C) over the
+        // base operator/feed data: step override wins, then base data, then the
+        // unresolved token is left in place. The escaping below is unchanged from
+        // the whole-content hardening (escape/validate the ENTIRE string, not just
+        // the token substitutions), so step data goes through the same path.
+        const tokenRe = /\\{\\{(\\w+)\\}\\}/g;
+        const stepData = this.activeStepData || {};
+        if (context === 'src') {
+            // Resolve every token to its raw value, then validate the ENTIRE
+            // assembled URL as one unit: a scheme like javascript: is rejected
+            // whether it came from a literal or a token (safeSrc blanks it).
+            const resolved = String(content).replace(tokenRe, (match, key) => {
+                if (key in stepData) return String(stepData[key]);
+                if (key in this.data) return String(this.data[key]);
+                return '';
+            });
+            return safeSrc(resolved);
+        }
+        // Text: escape the entire literal content first ({{key}} survives because
+        // braces and word chars are not escaped), then replace each token with its
+        // escaped value. An unresolved token stays as the (escaped) literal.
+        return escapeHtml(content).replace(tokenRe, (match, key) => {
+            if (key in stepData) return escapeHtml(stepData[key]);
+            if (key in this.data) return escapeHtml(this.data[key]);
+            return match;
         });
-        return result;
     }
 
     kebabCase(str) {
