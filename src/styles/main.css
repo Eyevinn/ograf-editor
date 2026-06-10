@@ -262,10 +262,11 @@ body.panel-resizing {
 
 .element-toolbar {
     background-color: #2d2d2d;
-    border-top: 1px solid #404040;
+    border-bottom: 1px solid #404040;
     padding: 10px 20px;
     display: flex;
     gap: 10px;
+    flex-shrink: 0;
 }
 
 .tool-btn {
