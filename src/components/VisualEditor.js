@@ -464,7 +464,12 @@ export class VisualEditor {
             div.style.alignItems = 'center';
         } else if (element.type === 'image') {
             const img = document.createElement('img');
-            img.src = element.content || PLACEHOLDER_IMAGE;
+            // Only load real http(s)/data:image URLs on the design canvas; an
+            // unresolved {{token}} or a hostile scheme from an imported template
+            // (e.g. data:text/html) falls back to the placeholder. This mirrors
+            // the safeSrc guard the generated component applies at render time.
+            const content = element.content || '';
+            img.src = /^(https?:\/\/|data:image\/)/i.test(content) ? content : PLACEHOLDER_IMAGE;
             img.style.width = '100%';
             img.style.height = '100%';
             img.style.objectFit = element.style?.objectFit || 'contain';

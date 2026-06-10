@@ -801,22 +801,44 @@ export class OGrafTemplate {
     }
 
     // Reject CSS style values that could break out of a `key: value;` declaration
-    // inside the generated `<style>` block. A crafted value containing { } < > or
-    // a double quote could otherwise close the rule or the <style> element and
-    // inject markup. Legitimate values (colors, px, rgba(), Arial, sans-serif)
-    // contain none of these, so they pass through untouched.
+    // inside the generated `<style>` block, OR out of the JS template literal that
+    // the generated component source wraps that block in. A crafted value with
+    // { } < > or a double quote could close the rule or the <style> element; a
+    // backtick or `${` could close the template literal in the generated .mjs and
+    // inject executable code. Legitimate values (colors, px, rgba(), Arial,
+    // sans-serif) contain none of these, so they pass through untouched.
     static sanitizeCssValue(value) {
         const str = String(value);
-        return /[{}<>"]/.test(str) ? '' : str;
+        if (/[{}<>"`]/.test(str) || str.includes('${')) {
+            return '';
+        }
+        return str;
+    }
+
+    // A CSS property name is only safe to splice into a declaration if it is a
+    // plain dashed identifier. Anything else (a key carrying braces, a backtick,
+    // or `${`) is rejected so a crafted style key cannot break out of the rule or
+    // the generated module's template literal the way a value could.
+    static sanitizeCssKey(key) {
+        const kebab = String(key)
+            .replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2')
+            .toLowerCase();
+        return /^-?[a-z][a-z0-9-]*$/.test(kebab) ? kebab : '';
     }
 
     generateElementStyles() {
         // Generate CSS styles for all elements. element.id is already slugified on
-        // import, and each value is checked so it cannot escape the declaration or
-        // the surrounding <style> element.
+        // import, and each key/value is checked so neither can escape the
+        // declaration, the surrounding <style> element, or the generated module's
+        // template literal. A key or value that fails validation is dropped.
         return this.elements.map(element => {
             const styles = Object.entries(element.style || {})
-                .map(([key, value]) => `${this.kebabCase(key)}: ${OGrafTemplate.sanitizeCssValue(value)};`)
+                .map(([key, value]) => {
+                    const safeKey = OGrafTemplate.sanitizeCssKey(key);
+                    if (!safeKey) return '';
+                    return `${safeKey}: ${OGrafTemplate.sanitizeCssValue(value)};`;
+                })
+                .filter(Boolean)
                 .join(' ');
             return `.element-${element.id} { ${styles} }`;
         }).join('\n');
@@ -899,6 +921,17 @@ function safeSrc(value) {
         return s;
     }
     return '';
+}
+
+// A style property name is only emitted if it is a plain dashed identifier, so a
+// crafted style key cannot close the style="..." attribute and inject markup.
+// Values are escaped separately; the key is not in an escapable context, so it
+// is validated rather than escaped.
+function safeCssKey(key) {
+    const kebab = String(key)
+        .replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2')
+        .toLowerCase();
+    return /^-?[a-z][a-z0-9-]*$/.test(kebab) ? kebab : '';
 }
 
 export default class ${className} extends HTMLElement {
@@ -1141,22 +1174,6 @@ export default class ${className} extends HTMLElement {
         this.runningAnimations = [];
     }
 
-    // The total span (ms) of an action across every element lane: max of
-    // (delay + last keyframe time). Mirrors the editor's computeActionDuration
-    // so the in-component clock matches the declared actionDurations.
-    computeActionTotal(action) {
-        const timeline = this.timeline || { elements: {} };
-        let max = 0;
-        Object.values(timeline.elements || {}).forEach(entry => {
-            const lane = action === 'out' ? entry.out : entry.in;
-            if (!lane || !Array.isArray(lane.keyframes) || lane.keyframes.length === 0) return;
-            const last = lane.keyframes.reduce((m, kf) => Math.max(m, Number(kf.t) || 0), 0);
-            const delay = Number(lane.delay) || 0;
-            max = Math.max(max, delay + last);
-        });
-        return max;
-    }
-
     render() {
         const style = \`
             <style>
@@ -1188,12 +1205,18 @@ export default class ${className} extends HTMLElement {
     renderElement(element) {
         const baseStyles = \`left: \${element.x}px; top: \${element.y}px; width: \${element.width}px; height: \${element.height}px;\`;
         
-        // Convert element.style object to CSS string. Escape each value for the
-        // double-quoted style="..." attribute context so an imported style value
-        // cannot close the attribute and inject markup. element.x/y/width/height
-        // are numbers set by the editor, so baseStyles needs no escaping.
+        // Convert element.style object to CSS string. Validate each key (drop it
+        // unless it is a plain dashed identifier) and escape each value for the
+        // double-quoted style="..." attribute context, so an imported style key
+        // or value cannot close the attribute and inject markup.
+        // element.x/y/width/height are numbers set by the editor, so baseStyles
+        // needs no escaping.
         const additionalStyles = element.style ? Object.entries(element.style)
-            .map(([key, value]) => \`\${this.kebabCase(key)}: \${escapeHtml(value)};\`)
+            .map(([key, value]) => {
+                const safeKey = safeCssKey(key);
+                return safeKey ? \`\${safeKey}: \${escapeHtml(value)};\` : '';
+            })
+            .filter(Boolean)
             .join(' ') : '';
         
         const allStyles = baseStyles + ' ' + additionalStyles;
