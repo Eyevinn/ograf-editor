@@ -207,27 +207,35 @@ export class ExportImportService {
      * Import from editor template format
      */
     importEditorTemplate(templateData) {
+        // The editor bundle carries elements/timeline as top-level fields. Fold
+        // them into the manifest under the vendor keys so the manifest-based
+        // importer recognizes this as an editor-made template (it would otherwise
+        // refuse a manifest with no v_ografEditorElements as a foreign graphic),
+        // and so it restores + id-sanitizes the elements and restores the timeline.
+        const manifest = { ...(templateData.manifest || {}) };
+        manifest.v_ografEditorElements = Array.isArray(templateData.elements) ? templateData.elements : [];
+        if (templateData.timeline !== undefined) {
+            manifest.v_ografEditorTimeline = templateData.timeline;
+        }
+
         const template = this.templateManager.importTemplate(
-            JSON.stringify(templateData.manifest),
+            JSON.stringify(manifest),
             templateData.webComponent
         );
-        
-        // Restore elements if available. Sanitize each element id: it is spliced
-        // into an `element-<id>` class attribute and a generated `<style>` block,
-        // so an imported id like `" onmouseover=...` could otherwise break out of
-        // that context. slugifyId restricts it to [a-z0-9-].
-        if (templateData.elements) {
+
+        // Restore + id-sanitize here too, so the result is correct regardless of
+        // the manager implementation. Element ids are spliced into an
+        // `element-<id>` class attribute and a generated <style> block, so
+        // slugifyId restricts them to [a-z0-9-].
+        if (Array.isArray(templateData.elements)) {
             template.elements = templateData.elements.map(element => ({
                 ...element,
                 id: OGrafTemplate.slugifyId(element.id)
             }));
         }
-
-        // Restore the authored timeline if it was persisted in the editor export.
         if (templateData.timeline !== undefined) {
             template.timeline = templateData.timeline;
         }
-
         return template;
     }
 
@@ -437,76 +445,6 @@ customElements.define('${safeId}-graphic', ${className});
             
             reader.readAsText(file);
         });
-    }
-
-    /**
-     * Export multiple templates as bundle
-     */
-    async exportTemplateBundle(templateIds, bundleName = 'ograf-templates') {
-        const bundle = {
-            format: 'ograf-editor-bundle',
-            version: '1.0.0',
-            exportDate: new Date().toISOString(),
-            bundleName: bundleName,
-            templates: {}
-        };
-
-        for (const templateId of templateIds) {
-            const template = this.templateManager.getTemplate(templateId);
-            if (template) {
-                bundle.templates[templateId] = template.toJSON();
-            }
-        }
-
-        const blob = new Blob([JSON.stringify(bundle, null, 2)], {
-            type: 'application/json'
-        });
-        
-        saveAs(blob, `${bundleName}-bundle.json`);
-        return blob;
-    }
-
-    /**
-     * Import template bundle
-     */
-    async importTemplateBundle(file) {
-        try {
-            const content = await this.readFile(file);
-            const bundle = JSON.parse(content);
-            
-            if (bundle.format !== 'ograf-editor-bundle') {
-                throw new Error('Invalid bundle format');
-            }
-
-            const importedTemplates = [];
-            
-            for (const [templateId, templateData] of Object.entries(bundle.templates)) {
-                try {
-                    // Check if template already exists
-                    if (this.templateManager.getTemplate(templateId)) {
-                        const shouldReplace = confirm(
-                            `Template "${templateId}" already exists. Do you want to replace it?`
-                        );
-                        if (!shouldReplace) continue;
-                        
-                        // Delete existing template
-                        this.templateManager.deleteTemplate(templateId);
-                    }
-                    
-                    const template = this.importEditorTemplate(templateData);
-                    importedTemplates.push(template);
-                } catch (error) {
-                }
-            }
-
-            return {
-                success: true,
-                importedCount: importedTemplates.length,
-                templates: importedTemplates
-            };
-        } catch (error) {
-            throw new Error(`Bundle import failed: ${error.message}`);
-        }
     }
 
     /**

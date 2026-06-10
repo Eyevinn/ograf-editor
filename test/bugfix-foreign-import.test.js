@@ -38,4 +38,25 @@ describe('foreign graphic import guard', () => {
     expect(t.elements).toHaveLength(1);
     expect(t.elements[0].id).toBe('bg');
   });
+
+  it('imports the editor JSON bundle (elements provided separately; manifest has no v_ key)', () => {
+    // Regression: the foreign-graphic guard must not reject our own editor
+    // bundle, whose elements live in a top-level field, not in the manifest.
+    const bundle = JSON.stringify({
+      format: 'ograf-editor-template',
+      template: {
+        manifest: {
+          $schema: SCHEMA, id: 'bundled', name: 'Bundled', main: 'template.mjs',
+          supportsRealTime: true, supportsNonRealTime: false,
+          schema: { type: 'object', properties: {} }
+        },
+        elements: [{ id: 'bg', type: 'rect', x: 0, y: 0, width: 5, height: 5, style: {} }],
+        webComponent: 'export default class Bundled extends HTMLElement {}'
+      }
+    });
+    const t = io.importFromJSON(bundle);
+    expect(t.manifest.id).toBe('bundled');
+    expect(t.elements).toHaveLength(1);
+    expect(t.elements[0].id).toBe('bg');
+  });
 });
