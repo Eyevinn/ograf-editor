@@ -1,5 +1,6 @@
 import { saveAs } from 'file-saver';
 import { OGrafTemplate } from '../models/OGrafTemplate.js';
+import { createZip } from '../utils/zip.js';
 
 export class ExportImportService {
     constructor(templateManager) {
@@ -34,22 +35,13 @@ export class ExportImportService {
     }
 
     /**
-     * Export template as ZIP file
+     * Export the OGraf Graphic as a single .zip bundle containing the spec files
+     * (the <id>.ograf.json manifest and the .mjs component). `files` is the
+     * { filename: content } map from TemplateManager.exportTemplate.
      */
     async exportAsZip(files, templateId) {
-        // For basic implementation without JSZip dependency
-        // We'll create a simple tar-like structure in a text file
-        const exportData = {
-            templateId: templateId,
-            exportDate: new Date().toISOString(),
-            files: files
-        };
-
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-            type: 'application/json'
-        });
-        
-        saveAs(blob, `${templateId}-ograf-export.json`);
+        const blob = createZip(files);
+        saveAs(blob, `${templateId}.ograf.zip`);
         return blob;
     }
 

@@ -516,11 +516,11 @@ class OGrafEditor {
         }
 
         try {
-            // Export the spec-compliant OGraf package: the manifest (<id>.ograf.json,
-            // per the spec the manifest file name MUST end with .ograf.json) and the
-            // component module (template.mjs that the manifest's "main" references).
-            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'folder');
-            this.showSuccessMessage('Exported the .ograf.json manifest and the .mjs component');
+            // Export a single .zip bundling the spec-compliant OGraf package: the
+            // manifest (<id>.ograf.json, the spec requires the .ograf.json suffix)
+            // and the .mjs component the manifest's "main" references.
+            await this.exportImportService.exportTemplate(currentTemplate.manifest.id, 'zip');
+            this.showSuccessMessage('Exported <id>.ograf.zip (manifest + .mjs component)');
         } catch (error) {
             alert(`Export failed: ${error.message}`);
         }
