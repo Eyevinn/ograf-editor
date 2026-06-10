@@ -188,10 +188,13 @@ export class PropertyPanel {
             </div>
 
             ${this.renderDataInputsSection(template)}
+
+            ${this.renderLiveDataSection(template)}
         `;
 
         this.setupAnimationEventListeners();
         this.setupDataInputEventListeners();
+        this.setupLiveDataEventListeners();
         this.restoreDataInputFocus();
         this.setupCollapsibleSections(container);
     }
@@ -251,7 +254,7 @@ export class PropertyPanel {
     // collapsed since it is the least frequently touched and the tallest.
     setupCollapsibleSections(container) {
         if (!this.collapsedSections) {
-            this.collapsedSections = new Set(['animation']);
+            this.collapsedSections = new Set(['animation', 'livedata']);
         }
         const sections = container.querySelectorAll('.property-section.collapsible');
         sections.forEach(section => {
@@ -326,18 +329,32 @@ export class PropertyPanel {
         // id namespace is per key + field so every label/control pair is unique.
         const idBase = `data-input-${this.escapeAttr(key)}`;
 
+        // Is this input currently fed by the live feed? Only when live data is
+        // enabled AND this key has a non-blank mapping. When fed, the
+        // Default-value control becomes readonly (not disabled, so it stays
+        // focusable and screen-reader reachable) with a "Fed by live data" note;
+        // Key/Label/Type stay editable. Reverts when disabled or unmapped.
+        const ds = template.getDataSource();
+        const isFed = ds.enabled && typeof ds.mapping[key] === 'string' && ds.mapping[key] !== '';
+        const fedAttrs = isFed
+            ? `readonly aria-describedby="${idBase}-fed-note"`
+            : '';
+
         // Default-value control follows the type.
         let defaultControl;
         if (type === 'number') {
             const numVal = (defaultValue === '' || defaultValue === undefined || defaultValue === null)
                 ? ''
                 : this.escapeAttr(String(defaultValue));
-            defaultControl = `<input type="number" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${numVal}">`;
+            defaultControl = `<input type="number" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${numVal}" ${fedAttrs}>`;
         } else if (type === 'boolean') {
             const checked = defaultValue === true ? 'checked' : '';
+            // A checkbox cannot be readonly; disable it when fed so it cannot be
+            // toggled, but it still announces its state and the fed note.
+            const boolFed = isFed ? `disabled aria-describedby="${idBase}-fed-note"` : '';
             defaultControl = `
                 <label class="data-input-checkbox-label">
-                    <input type="checkbox" id="${idBase}-default" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" ${checked}>
+                    <input type="checkbox" id="${idBase}-default" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" ${checked} ${boolFed}>
                     <span>Yes</span>
                 </label>
             `;
@@ -345,8 +362,12 @@ export class PropertyPanel {
             const textVal = (defaultValue === undefined || defaultValue === null)
                 ? ''
                 : this.escapeAttr(String(defaultValue));
-            defaultControl = `<input type="text" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${textVal}">`;
+            defaultControl = `<input type="text" id="${idBase}-default" class="property-input" data-data-input-field="default" data-data-input-key="${this.escapeAttr(key)}" value="${textVal}" ${fedAttrs}>`;
         }
+
+        const fedBadge = isFed
+            ? `<span class="live-data-badge" id="${idBase}-fed-note">Fed by live data</span>`
+            : '';
 
         const referencingCount = template.findElementsReferencingProperty(key).length;
         const notUsedNote = referencingCount === 0
@@ -374,13 +395,289 @@ export class PropertyPanel {
                     </select>
                 </div>
                 <div class="property-group">
-                    <label for="${idBase}-default">Default value</label>
+                    <label for="${idBase}-default">Default value ${fedBadge}</label>
                     ${defaultControl}
                 </div>
                 <button type="button" class="btn-remove-data-input" data-remove-data-input="${this.escapeAttr(key)}" aria-label="Remove data input ${safeKey}">Remove</button>
                 ${notUsedNote}
             </div>
         `;
+    }
+
+    // Build the "Live data" section. Lets a template auto-fill its data inputs
+    // from an external feed (polled JSON URL / CSV URL / Google Sheet published
+    // as CSV). Manual inputs still work; a mapped input is fed by the feed,
+    // others stay manual. OGraf data is push-only, so this is editor-side: the
+    // generated component bakes the config and polls itself. Enabling forces
+    // supportsNonRealTime=false (handled in the model).
+    renderLiveDataSection(template) {
+        const ds = template.getDataSource();
+        const enabled = !!ds.enabled;
+        const intervalSec = Math.max(1, Math.round((ds.intervalMs || 5000) / 1000));
+
+        const placeholderFor = (type) => {
+            if (type === 'csv') return 'https://example.com/feed.csv';
+            if (type === 'gsheet') return 'https://docs.google.com/.../pub?output=csv';
+            return 'https://example.com/feed.json';
+        };
+
+        const body = enabled
+            ? `
+                <div class="property-group">
+                    <label for="live-data-type">Source type</label>
+                    <select id="live-data-type" class="property-input" data-live-data-field="type">
+                        <option value="json" ${ds.type === 'json' ? 'selected' : ''}>JSON URL</option>
+                        <option value="csv" ${ds.type === 'csv' ? 'selected' : ''}>CSV URL</option>
+                        <option value="gsheet" ${ds.type === 'gsheet' ? 'selected' : ''}>Google Sheet (published as CSV)</option>
+                    </select>
+                </div>
+                <div class="property-group">
+                    <label for="live-data-url">Feed URL</label>
+                    <input type="url" id="live-data-url" class="property-input" data-live-data-field="url" value="${this.escapeAttr(ds.url || '')}" placeholder="${this.escapeAttr(placeholderFor(ds.type))}" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="property-group">
+                    <label for="live-data-interval">Refresh every (seconds)</label>
+                    <input type="number" id="live-data-interval" class="property-input" data-live-data-field="interval" value="${intervalSec}" min="1" step="1">
+                </div>
+                <div class="property-group">
+                    <button type="button" class="btn-add-data-input" data-live-data-test>Test connection</button>
+                    <p class="live-data-status" data-live-data-status role="status" aria-live="polite"></p>
+                </div>
+                ${this.renderLiveDataMapping(template, ds)}
+            `
+            : `
+                <p class="data-input-empty">No live data. Bind inputs to a feed to auto-fill them.</p>
+            `;
+
+        return `
+            <div class="property-section collapsible" data-section="livedata">
+                <button type="button" class="property-section-header" aria-expanded="false"><span class="section-caret" aria-hidden="true">&#9662;</span>Live data</button>
+                <div class="live-data-body" role="group" aria-label="Live data">
+                    <p class="section-description">Auto-fill data inputs from an external feed so the on-air graphic updates live. Manual inputs still work, and the last good values stay on screen if a refresh fails.</p>
+
+                    <div class="property-group">
+                        <label class="data-input-checkbox-label">
+                            <input type="checkbox" data-live-data-field="enabled" ${enabled ? 'checked' : ''}>
+                            <span>Enable live data</span>
+                        </label>
+                    </div>
+
+                    ${body}
+                </div>
+            </div>
+        `;
+    }
+
+    // One mapping row per existing data input, in schema order. Each row shows
+    // "Label ({{key}})", a Feed field text input (placeholder depends on type),
+    // and a pill: "Feed-driven" when the field is non-empty, "Manual" when blank.
+    renderLiveDataMapping(template, ds) {
+        const properties = template.manifest.schema.properties || {};
+        const keys = Object.keys(properties);
+
+        if (keys.length === 0) {
+            return `
+                <div class="live-data-mapping">
+                    <p class="data-input-empty">Add a data input first, then map it to a feed field.</p>
+                </div>
+            `;
+        }
+
+        const fieldPlaceholder = ds.type === 'json'
+            ? 'key (e.g. headline)'
+            : 'column name or number';
+
+        const rows = keys.map(key => {
+            const prop = properties[key];
+            const label = prop.title || key;
+            const mapped = typeof ds.mapping[key] === 'string' ? ds.mapping[key] : '';
+            const isFed = mapped !== '';
+            const pill = isFed
+                ? `<span class="live-data-pill live-data-pill-fed">Feed-driven</span>`
+                : `<span class="live-data-pill live-data-pill-manual">Manual</span>`;
+            const inputId = `live-data-map-${this.escapeAttr(key)}`;
+            return `
+                <div class="live-data-map-row" role="group" aria-label="Mapping for ${this.escapeHtml(key)}">
+                    <label for="${inputId}">${this.escapeHtml(label)} ({{${this.escapeHtml(key)}}})</label>
+                    <div class="live-data-map-controls">
+                        <input type="text" id="${inputId}" class="property-input" data-live-data-map-key="${this.escapeAttr(key)}" value="${this.escapeAttr(mapped)}" placeholder="${this.escapeAttr(fieldPlaceholder)}" autocomplete="off" spellcheck="false">
+                        ${pill}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="live-data-mapping">
+                <p class="section-description">Map each data input to a feed field. Leave a field blank to keep that input manual.</p>
+                ${rows}
+            </div>
+        `;
+    }
+
+    // Wire the Live data controls. Enable toggle, source type, URL, interval,
+    // Test connection, and the per-input mapping fields. Every binding change
+    // regenerates the component and reloads the preview so the graphic reflects
+    // the new feed wiring immediately.
+    setupLiveDataEventListeners() {
+        const container = this.container;
+
+        const fields = container.querySelectorAll('[data-live-data-field]');
+        fields.forEach(input => {
+            const field = input.dataset.liveDataField;
+            if (field === 'enabled') {
+                input.addEventListener('change', (e) => {
+                    this.updateLiveData({ enabled: e.target.checked });
+                    // Toggling shows/hides the whole body, so re-render the panel.
+                    this.render();
+                });
+                return;
+            }
+            if (field === 'type') {
+                input.addEventListener('change', (e) => {
+                    this.updateLiveData({ type: e.target.value });
+                    // Placeholders + mapping hints depend on type; re-render.
+                    this.render();
+                });
+                return;
+            }
+            if (field === 'url') {
+                input.addEventListener('input', (e) => {
+                    this.updateLiveData({ url: e.target.value });
+                });
+                return;
+            }
+            if (field === 'interval') {
+                input.addEventListener('change', (e) => {
+                    const sec = Number(e.target.value);
+                    if (!Number.isFinite(sec) || sec < 1) return;
+                    // Store the floored millisecond value (>= 1000).
+                    this.updateLiveData({ intervalMs: Math.max(1000, Math.round(sec * 1000)) });
+                });
+            }
+        });
+
+        // Mapping fields. Commit on change/blur (not per keystroke) so a
+        // half-typed field name does not thrash the preview; the Feed-driven /
+        // Manual pill flips on commit via a re-render.
+        const mapInputs = container.querySelectorAll('[data-live-data-map-key]');
+        mapInputs.forEach(input => {
+            const key = input.dataset.liveDataMapKey;
+            const commit = () => {
+                if (!input.isConnected) return;
+                this.updateLiveDataMapping(key, input.value);
+                this.render();
+            };
+            input.addEventListener('change', commit);
+        });
+
+        // Test connection.
+        const testBtn = container.querySelector('[data-live-data-test]');
+        if (testBtn) {
+            testBtn.addEventListener('click', () => this.testLiveDataConnection(testBtn));
+        }
+    }
+
+    updateLiveData(patch) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+        template.updateDataSource(patch);
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+    }
+
+    updateLiveDataMapping(key, feedField) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+        template.setDataSourceMapping(key, feedField);
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+    }
+
+    // Test the configured feed from the editor using the SAME fetch+parse+map
+    // logic the generated component runs, then report detected fields/columns to
+    // help mapping. On failure show a calm, plain message that names CORS and
+    // reassures the operator that last-good data keeps showing on air.
+    async testLiveDataConnection(button) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+        const ds = template.getDataSource();
+        const statusEl = this.container.querySelector('[data-live-data-status]');
+        const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+
+        if (!ds.url) {
+            setStatus('Enter a feed URL first.');
+            return;
+        }
+
+        button.setAttribute('aria-busy', 'true');
+        button.disabled = true;
+        setStatus('Testing connection...');
+
+        try {
+            const res = await fetch(ds.url);
+            if (!res.ok) {
+                setStatus(`The feed responded with HTTP ${res.status}. The last good data stays on air.`);
+                return;
+            }
+            const text = await res.text();
+            let fields;
+            if (ds.type === 'json') {
+                const parsed = JSON.parse(text);
+                fields = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                    ? Object.keys(parsed)
+                    : [];
+            } else {
+                fields = this.parseCsvHeaders(text);
+            }
+            const now = new Date().toLocaleTimeString();
+            const detected = fields.length
+                ? ` Detected ${ds.type === 'json' ? 'fields' : 'columns'}: ${fields.slice(0, 20).join(', ')}.`
+                : ' No fields detected; check the feed format.';
+            setStatus(`Connected. Updated ${now}.${detected}`);
+        } catch (error) {
+            // A fetch TypeError is the usual CORS/network signature. Keep it calm
+            // and actionable, and always reassure about last-good data.
+            setStatus(
+                'Could not reach the feed. If the URL is correct, the URL must allow cross-origin requests (CORS); ' +
+                'host it somewhere that sends CORS headers, or use a feed that already does. ' +
+                'The last good data stays on air.'
+            );
+        } finally {
+            button.removeAttribute('aria-busy');
+            button.disabled = false;
+        }
+    }
+
+    // Minimal CSV header read for the Test-connection preview: first line, split
+    // on commas, honoring simple double-quoted fields. The generated component
+    // owns the full parser; this is only for showing column names to map.
+    parseCsvHeaders(text) {
+        const firstLine = String(text).split(/\r?\n/)[0] || '';
+        const headers = [];
+        let field = '';
+        let inQuotes = false;
+        for (let i = 0; i < firstLine.length; i++) {
+            const c = firstLine[i];
+            if (inQuotes) {
+                if (c === '"') {
+                    if (firstLine[i + 1] === '"') { field += '"'; i++; }
+                    else inQuotes = false;
+                } else field += c;
+            } else if (c === '"') {
+                inQuotes = true;
+            } else if (c === ',') {
+                headers.push(field); field = '';
+            } else field += c;
+        }
+        headers.push(field);
+        return headers.filter(h => h !== '');
     }
 
     renderElementProperties(container, element) {
