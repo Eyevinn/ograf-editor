@@ -65,7 +65,14 @@ body {
 .header h1 {
     font-size: 1.5rem;
     font-weight: 600;
-    color: #ffffff;
+    letter-spacing: 0.3px;
+    /* Cyan-to-blue gradient wordmark for a bit of pop. Falls back to solid cyan
+       where background-clip:text is unsupported. */
+    color: #4dc9ff;
+    background: linear-gradient(90deg, #4dc9ff, #8ab4ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .header-actions {
@@ -150,10 +157,11 @@ body.panel-resizing {
     padding: 15px 20px;
     background-color: #2d2d2d;
     font-size: 0.9rem;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #b0b0b0;
+    letter-spacing: 0.8px;
+    color: #4dc9ff;
+    border-left: 3px solid #007acc;
 }
 
 .template-list {
@@ -206,8 +214,9 @@ body.panel-resizing {
 }
 
 .tab-btn.active {
-    color: #ffffff;
-    border-bottom-color: #007acc;
+    color: #4dc9ff;
+    font-weight: 600;
+    border-bottom-color: #4dc9ff;
 }
 
 .editor-content {

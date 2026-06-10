@@ -56,6 +56,13 @@
     outline-offset: 2px;
 }
 
+.timeline-title {
+    color: #4dc9ff;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-size: 0.8rem;
+}
+
 .timeline-caret {
     font-size: 0.7rem;
     color: #909090;
