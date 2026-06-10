@@ -660,3 +660,66 @@
 [aria-invalid="true"] {
     border-color: #ff8a80 !important;
 }
+
+/* Image file picker (GAP-E). The native file input is hidden but kept in the
+   DOM and focusable so the button click forwards to it; the button is the
+   visible, labelled control. */
+.image-file-row {
+    margin-top: 8px;
+}
+
+.btn-choose-image-file {
+    padding: 8px 12px;
+    border: 1px solid #404040;
+    border-radius: 3px;
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.btn-choose-image-file:hover {
+    background-color: #383838;
+    border-color: #007acc;
+}
+
+.btn-choose-image-file:focus-visible,
+.image-file-input:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
+/* Visually hide the file input but keep it operable and reachable. */
+.image-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.image-file-note {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: #b0b0b0;
+}
+
+.image-file-note:empty {
+    margin-top: 0;
+}
+
+.image-file-note-error {
+    color: #ff8a80;
+}
+
+.image-file-note-warn {
+    color: #ffce54;
+}
+
+.image-file-note-ok {
+    color: #8bc98b;
+}
