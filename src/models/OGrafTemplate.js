@@ -927,6 +927,10 @@ export default class ${className} extends HTMLElement {
         }
         this.isVisible = false;
         this.render();
+        // Apply the in-animation's start state immediately so a loaded-but-not-
+        // played graphic shows its pre-animation state (e.g. opacity 0) instead
+        // of its visible resting state. Elements with no in-lane stay at rest.
+        this.applyInitialState('in');
         return { statusCode: 200 };
     }
 
@@ -942,6 +946,13 @@ export default class ${className} extends HTMLElement {
         this.isVisible = true;
         this.currentStep = 1;
         this.render();
+
+        // Apply the in-animation's initial keyframe state to every element's
+        // inline style NOW, synchronously, before the browser paints and before
+        // the rAF below. Otherwise the resting (visible) frame paints first and a
+        // fade-in/slide-in element flashes visible before the WAAPI animation
+        // hides it, and stays visible during a lane delay.
+        this.applyInitialState('in');
 
         // Wait one frame so the rendered elements are laid out before the Web
         // Animations API reads/animates them.
@@ -1025,17 +1036,56 @@ export default class ${className} extends HTMLElement {
         const sorted = lane.keyframes.slice().sort((a, b) => (a.t || 0) - (b.t || 0));
         const delay = Number(lane.delay) || 0;
         const last = sorted.reduce((m, kf) => Math.max(m, Number(kf.t) || 0), 0);
-        // The element's own animated span (after its delay). The shared total
-        // duration is the action span; per element we run its own keyframes over
-        // their own length, offset by delay.
+        // Map offsets over the full [0..last] span. The element animates over its
+        // own length (last keyframe time), offset by its delay; there is no
+        // shared-clock scaling across elements.
         const span = last > 0 ? last : 1;
         const keyframes = sorted.map(kf => this.timelineKeyframeToWAAPI(kf, (Number(kf.t) || 0) / span));
-        // Guarantee an offset:0 frame so the animation starts from a defined
-        // state (the first authored keyframe is expected to be t:0).
-        if (keyframes.length === 1) {
+        // Guarantee an explicit offset:0 frame holding the earliest authored
+        // value. Without it, when the first authored keyframe is at t>0 (or there
+        // is only one keyframe), WAAPI synthesizes the 0-offset from the
+        // element's underlying/computed style and the authored first value is
+        // ignored. Cloning the earliest frame at offset 0 honors the gap before
+        // it as a lead-in hold, so the element holds its first authored state
+        // from the start of the (delay-offset) span.
+        if (keyframes.length === 0 || keyframes[0].offset !== 0) {
             keyframes.unshift({ ...keyframes[0], offset: 0 });
         }
         return { keyframes, timing: { duration: span, delay, fill: 'both', easing: 'linear' } };
+    }
+
+    // Apply each element's pre-animation state for an action ('in' | 'out')
+    // directly to its inline style, synchronously and BEFORE any paint/rAF. This
+    // is what stops an element that should start hidden (e.g. a fade-in with
+    // opacity 0 at t:0, or a slide-in translated off-stage) from flashing at its
+    // visible resting state on the first painted frame and during any lane delay.
+    // For each .element node with a lane for this action we read the lane's
+    // offset:0 WAAPI keyframe (buildLaneEffect always provides one) and set
+    // opacity/transform from it. Elements with no lane for this action are left
+    // at their resting state (no inline override). After the WAAPI animation
+    // runs, fill:'both' holds the final (visible) state, so the resting style is
+    // correct again at the end.
+    applyInitialState(action) {
+        const timeline = this.timeline || { elements: {} };
+        const nodes = this.shadowRoot.querySelectorAll('.element');
+        if (!nodes || nodes.length === 0) return;
+        nodes.forEach(node => {
+            const id = node.getAttribute('data-element-id');
+            const entry = id && timeline.elements ? timeline.elements[id] : null;
+            const lane = entry ? (action === 'out' ? entry.out : entry.in) : null;
+            const effect = this.buildLaneEffect(lane);
+            if (!effect || !effect.keyframes || effect.keyframes.length === 0) {
+                // No lane: leave the element at its resting state.
+                return;
+            }
+            const first = effect.keyframes[0];
+            if (first.opacity !== undefined && first.opacity !== null) {
+                node.style.opacity = String(first.opacity);
+            }
+            if (first.transform) {
+                node.style.transform = first.transform;
+            }
+        });
     }
 
     // Run an action's authored timeline ('in' | 'out') across every element via

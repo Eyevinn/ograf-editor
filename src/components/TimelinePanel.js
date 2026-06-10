@@ -31,6 +31,10 @@ export class TimelinePanel {
         this.container = containerElement; // .editor-area
         this.templateManager = templateManager;
         this.visualEditor = visualEditor;
+        // Set via setPreviewEngine() after construction (mirrors PropertyPanel).
+        // A keyframe edit calls previewEngine.reloadComponent() so the live
+        // preview rebuilds and re-plays without a manual Stop/Play.
+        this.previewEngine = null;
 
         this.panel = null;
         this.collapsed = this.readCollapsed();
@@ -46,6 +50,12 @@ export class TimelinePanel {
         this.runningAnimations = [];
 
         this.init();
+    }
+
+    // Connect the live Preview tab so a keyframe edit refreshes it the same way
+    // PropertyPanel's Simple-path edits do (recreate + re-play when playing).
+    setPreviewEngine(previewEngine) {
+        this.previewEngine = previewEngine;
     }
 
     init() {
@@ -177,6 +187,20 @@ export class TimelinePanel {
         template.updateActionDurations();
         template.generateWebComponent();
         this.templateManager.saveToStorage();
+
+        // Refresh the live Preview tab so a keyframe edit is visible without a
+        // manual Stop/Play. reloadComponent() rebuilds the generated component
+        // (the timeline is baked at generateWebComponent() time) and re-plays it
+        // when the preview was already playing. Mirrors the PropertyPanel
+        // Simple-path. Fall back to the global app instance if no engine was
+        // wired directly.
+        const engine = this.previewEngine
+            || (typeof window !== 'undefined' && window.ografEditor
+                ? window.ografEditor.previewEngine
+                : null);
+        if (engine && typeof engine.reloadComponent === 'function') {
+            engine.reloadComponent();
+        }
     }
 
     totalDuration(action) {
@@ -811,7 +835,13 @@ export class TimelinePanel {
             return out;
         };
         const keyframes = sorted.map(kf => toWAAPI(kf, (Number(kf.t) || 0) / span));
-        if (keyframes.length === 1) keyframes.unshift({ ...keyframes[0], offset: 0 });
+        // Always hold the earliest authored value at offset 0 (mirrors the
+        // generated component's buildLaneEffect; see the note there). A
+        // first-keyframe-at-t>0 lane treats the gap as a lead-in hold instead of
+        // letting WAAPI synthesize the 0-offset from underlying style.
+        if (keyframes.length === 0 || keyframes[0].offset !== 0) {
+            keyframes.unshift({ ...keyframes[0], offset: 0 });
+        }
         return { keyframes, timing: { duration: span, delay, fill: 'both', easing: 'linear' } };
     }
 

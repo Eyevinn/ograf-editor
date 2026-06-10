@@ -59,6 +59,12 @@ class OGrafEditor {
         const editorArea = document.querySelector('.editor-area');
         if (editorArea && this.visualEditor) {
             this.timelinePanel = new TimelinePanel(editorArea, this.templateManager, this.visualEditor);
+            // Connect the timeline panel to the preview engine so a keyframe edit
+            // refreshes the live preview (recreate + re-play) without a manual
+            // Stop/Play, the same way PropertyPanel's Simple-path edits do.
+            if (this.previewEngine) {
+                this.timelinePanel.setPreviewEngine(this.previewEngine);
+            }
         }
 
         // Setup cross-component communication
