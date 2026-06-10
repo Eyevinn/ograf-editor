@@ -269,8 +269,10 @@
 }
 
 .template-list-container {
-    max-height: 300px;
-    overflow-y: auto;
+    /* The panel's .template-list-content is the single scroll area; do not add a
+       second nested scrollbar here. */
+    display: flex;
+    flex-direction: column;
 }
 
 .template-item {

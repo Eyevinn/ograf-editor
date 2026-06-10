@@ -555,7 +555,7 @@ export class TimelinePanel {
             const again = this.panel.querySelector(
                 `.timeline-kf[data-kf-element="${CSS.escape(elementId)}"][data-kf-action="${action}"][data-kf-index="${index}"]`
             );
-            if (again) again.focus();
+            if (again) again.focus({ preventScroll: true });
         };
 
         kfEl.addEventListener('click', (e) => { e.stopPropagation(); select(); });
@@ -578,7 +578,7 @@ export class TimelinePanel {
                 const moved = this.panel.querySelector(
                     `.timeline-kf[data-kf-element="${CSS.escape(elementId)}"][data-kf-action="${action}"][data-kf-index="${newIndex}"]`
                 );
-                if (moved) moved.focus();
+                if (moved) moved.focus({ preventScroll: true });
                 e.preventDefault();
             } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 this.selectedElementId = elementId;
@@ -589,7 +589,7 @@ export class TimelinePanel {
             } else if (e.key === 'Enter') {
                 select();
                 const opacityInput = this.panel.querySelector('[data-kf-prop="opacity"]');
-                if (opacityInput) opacityInput.focus();
+                if (opacityInput) opacityInput.focus({ preventScroll: true });
                 e.preventDefault();
             }
         });
@@ -767,7 +767,7 @@ export class TimelinePanel {
         } else if (target.prop) {
             el = this.panel.querySelector(`[data-kf-prop="${target.prop}"]`);
         }
-        if (el) el.focus();
+        if (el) el.focus({ preventScroll: true });
     }
 
     // ---- local preview on the live canvas nodes ----------------------------
@@ -851,7 +851,8 @@ export class TimelinePanel {
         if (this.collapsed || !this.selectedElementId) return;
         const track = this.panel.querySelector(`.timeline-track[data-track="${CSS.escape(this.selectedElementId)}"]`);
         if (track && typeof track.scrollIntoView === 'function') {
-            track.scrollIntoView({ block: 'nearest' });
+            // nearest on both axes so revealing a track never scrolls the page.
+            track.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         }
     }
 
