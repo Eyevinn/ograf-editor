@@ -344,6 +344,13 @@ class OGrafEditor {
             tab.classList.toggle('active', tab.id === `${viewName}-editor`);
         });
 
+        // The Preview tab has its own Play/Stop transport, so hide the bottom
+        // Timeline panel there to avoid two play/stop controls driving two
+        // different surfaces. It returns in the Visual/Code tabs.
+        if (this.timelinePanel) {
+            this.timelinePanel.setVisible(viewName !== 'preview');
+        }
+
         // Update components based on view
         if (viewName === 'visual' && this.visualEditor) {
             this.visualEditor.render();
@@ -486,7 +493,8 @@ class OGrafEditor {
     showImportDialog() {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json';
+        // Accept the exported .ograf.zip bundle or a single .ograf.json manifest.
+        input.accept = '.zip,.json,.ograf.json';
         input.style.display = 'none';
         
         input.addEventListener('change', async (e) => {

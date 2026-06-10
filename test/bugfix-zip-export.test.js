@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createZip, crc32 } from '../src/utils/zip.js';
+import { createZip, crc32, readZip } from '../src/utils/zip.js';
 
 describe('zip export util', () => {
   it('crc32 matches the known checksum for "hello"', () => {
@@ -31,5 +31,16 @@ describe('zip export util', () => {
     const text = new TextDecoder().decode(buf);
     expect(text).toContain('demo.ograf.json');
     expect(text).toContain('template.mjs');
+  });
+
+  it('round-trips: createZip then readZip returns the same files (export/import symmetry)', async () => {
+    const files = {
+      'demo.ograf.json': '{"id":"demo","name":"Demo","main":"template.mjs"}',
+      'template.mjs': 'export default class Demo extends HTMLElement {}'
+    };
+    const blob = createZip(files);
+    const entries = await readZip(await blob.arrayBuffer());
+    expect(entries['demo.ograf.json']).toBe(files['demo.ograf.json']);
+    expect(entries['template.mjs']).toBe(files['template.mjs']);
   });
 });

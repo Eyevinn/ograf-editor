@@ -1,6 +1,6 @@
 import { saveAs } from 'file-saver';
 import { OGrafTemplate } from '../models/OGrafTemplate.js';
-import { createZip } from '../utils/zip.js';
+import { createZip, readZip } from '../utils/zip.js';
 
 export class ExportImportService {
     constructor(templateManager) {
@@ -81,16 +81,55 @@ export class ExportImportService {
      */
     async importTemplate(file) {
         try {
-            const content = await this.readFile(file);
-            
-            if (file.name.endsWith('.json')) {
-                return this.importFromJSON(content);
-            } else {
-                throw new Error('Unsupported file format. Please upload a JSON file.');
+            const name = (file.name || '').toLowerCase();
+            const isZip = name.endsWith('.zip') || file.type === 'application/zip';
+            if (isZip) {
+                return await this.importFromZip(file);
             }
+
+            const content = await this.readFile(file);
+            if (name.endsWith('.json')) {
+                // Handles both a raw <id>.ograf.json manifest and the editor JSON
+                // bundle (importFromJSON detects the shape).
+                return this.importFromJSON(content);
+            }
+            if (name.endsWith('.mjs') || name.endsWith('.js')) {
+                throw new Error('Import the .ograf.json manifest or the .ograf.zip, not the component module on its own.');
+            }
+            throw new Error('Unsupported file. Import a .ograf.zip bundle or a .ograf.json manifest.');
         } catch (error) {
             throw new Error(`Import failed: ${error.message}`);
         }
+    }
+
+    // Import the .ograf.zip we export: unzip, read the <id>.ograf.json manifest
+    // (which carries the authored elements/timeline under v_ vendor keys), and
+    // keep the exact .mjs component if present.
+    async importFromZip(file) {
+        const buf = await this.readFileAsArrayBuffer(file);
+        const entries = await readZip(buf);
+        const names = Object.keys(entries);
+        const manifestName = names.find(n => n.toLowerCase().endsWith('.ograf.json'))
+            || names.find(n => n.toLowerCase().endsWith('.json'));
+        if (!manifestName) {
+            throw new Error('No .ograf.json manifest found in the zip.');
+        }
+        const template = this.importFromJSON(entries[manifestName]);
+        const mjsName = names.find(n => n.toLowerCase().endsWith('.mjs') || n.toLowerCase().endsWith('.js'));
+        if (mjsName && entries[mjsName]) {
+            template.webComponent = entries[mjsName];
+            this.templateManager.saveToStorage();
+        }
+        return template;
+    }
+
+    readFileAsArrayBuffer(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsArrayBuffer(file);
+        });
     }
 
     /**

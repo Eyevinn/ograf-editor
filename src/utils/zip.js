@@ -80,3 +80,56 @@ export function createZip(files) {
 
     return new Blob(chunks, { type: 'application/zip' });
 }
+
+async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+        throw new Error('This browser cannot read compressed zip entries.');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Read a zip (stored or deflate) into { filename: textContent }. Decodes entries
+// as UTF-8 (OGraf files are text). Reads our own stored zips and standard
+// deflate zips produced by other tools.
+export async function readZip(arrayBuffer) {
+    const buf = new Uint8Array(arrayBuffer);
+    const dv = new DataView(arrayBuffer);
+    const decoder = new TextDecoder();
+
+    // Find the End Of Central Directory record (scan back over any comment).
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65536); i--) {
+        if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('Not a valid zip file');
+
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true); // central directory offset
+    const out = {};
+
+    for (let n = 0; n < count; n++) {
+        if (dv.getUint32(p, true) !== 0x02014b50) break;
+        const method = dv.getUint16(p + 10, true);
+        const compSize = dv.getUint32(p + 20, true);
+        const nameLen = dv.getUint16(p + 28, true);
+        const extraLen = dv.getUint16(p + 30, true);
+        const commentLen = dv.getUint16(p + 32, true);
+        const localOffset = dv.getUint32(p + 42, true);
+        const name = decoder.decode(buf.subarray(p + 46, p + 46 + nameLen));
+
+        const lhNameLen = dv.getUint16(localOffset + 26, true);
+        const lhExtraLen = dv.getUint16(localOffset + 28, true);
+        const dataStart = localOffset + 30 + lhNameLen + lhExtraLen;
+        const raw = buf.subarray(dataStart, dataStart + compSize);
+
+        let data;
+        if (method === 0) data = raw;
+        else if (method === 8) data = await inflateRaw(raw);
+        else throw new Error('Unsupported zip compression method ' + method);
+
+        out[name] = decoder.decode(data);
+        p += 46 + nameLen + extraLen + commentLen;
+    }
+    return out;
+}
