@@ -1636,7 +1636,7 @@ export default class ${className} extends HTMLElement {
 
         switch (element.type) {
             case 'text': {
-                // Text context: escape the resolved data value.
+                // Text context: the whole content (literal + resolved tokens) is escaped.
                 const content = this.interpolateContent(element.content || '');
                 return \`<div class="element element-\${element.id}" \${idAttr} style="\${allStyles}">\${content}</div>\`;
             }
@@ -1656,14 +1656,28 @@ export default class ${className} extends HTMLElement {
         }
     }
 
+    // All authored content is untrusted at render time, so escape/validate the
+    // WHOLE string, not only the {{token}} substitutions. Without this, literal
+    // authored markup (e.g. a text element whose content is "<img onerror=...>"
+    // with no token) or a literal hostile image src would bypass escaping
+    // entirely, since a token-only replace leaves the literal segments untouched.
     interpolateContent(content, context = 'text') {
-        const result = content.replace(/\\{\\{(\\w+)\\}\\}/g, (match, key) => {
-            // Keep the presence check so empty-string/0 still render, and an
-            // unresolved placeholder is left untouched (then escaped).
-            const value = key in this.data ? this.data[key] : match;
-            return context === 'src' ? safeSrc(value) : escapeHtml(value);
-        });
-        return result;
+        const tokenRe = /\\{\\{(\\w+)\\}\\}/g;
+        if (context === 'src') {
+            // Resolve every token to its raw value, then validate the ENTIRE
+            // assembled URL as one unit: a scheme like javascript: is rejected
+            // whether it came from a literal or a token (safeSrc blanks it).
+            const resolved = String(content).replace(tokenRe, (match, key) => (
+                key in this.data ? String(this.data[key]) : ''
+            ));
+            return safeSrc(resolved);
+        }
+        // Text: escape the entire literal content first ({{key}} survives because
+        // braces and word chars are not escaped), then replace each token with its
+        // escaped value. An unresolved token stays as the (escaped) literal.
+        return escapeHtml(content).replace(tokenRe, (match, key) => (
+            key in this.data ? escapeHtml(this.data[key]) : match
+        ));
     }
 
     kebabCase(str) {
