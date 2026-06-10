@@ -102,6 +102,30 @@ export class ExportImportService {
         }
     }
 
+    // Import several files chosen together: the .ograf.json manifest plus its
+    // .mjs component (or a .zip among the selection). Mirrors the zip path, the
+    // manifest carries the authored elements/timeline; the .mjs is kept verbatim.
+    async importFromFiles(files) {
+        const list = Array.from(files);
+        const byExt = (re) => list.find(f => re.test((f.name || '').toLowerCase()));
+
+        const zip = byExt(/\.zip$/);
+        if (zip) return this.importFromZip(zip);
+
+        const manifestFile = byExt(/\.ograf\.json$/) || byExt(/\.json$/);
+        if (!manifestFile) {
+            throw new Error('Select the .ograf.json manifest (optionally with its .mjs component).');
+        }
+        const template = this.importFromJSON(await this.readFile(manifestFile));
+
+        const mjsFile = byExt(/\.(mjs|js)$/);
+        if (mjsFile) {
+            template.webComponent = await this.readFile(mjsFile);
+            this.templateManager.saveToStorage();
+        }
+        return template;
+    }
+
     // Import the .ograf.zip we export: unzip, read the <id>.ograf.json manifest
     // (which carries the authored elements/timeline under v_ vendor keys), and
     // keep the exact .mjs component if present.

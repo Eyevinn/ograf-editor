@@ -493,16 +493,20 @@ class OGrafEditor {
     showImportDialog() {
         const input = document.createElement('input');
         input.type = 'file';
-        // Accept the exported .ograf.zip bundle or a single .ograf.json manifest.
-        input.accept = '.zip,.json,.ograf.json';
+        // Accept the exported .ograf.zip bundle, a single .ograf.json manifest,
+        // or the manifest + .mjs selected together as separate files.
+        input.accept = '.zip,.json,.ograf.json,.mjs,.js';
+        input.multiple = true;
         input.style.display = 'none';
-        
+
         input.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+            const files = Array.from(e.target.files || []);
+            if (!files.length) return;
 
             try {
-                const template = await this.exportImportService.importTemplate(file);
+                const template = files.length > 1
+                    ? await this.exportImportService.importFromFiles(files)
+                    : await this.exportImportService.importTemplate(files[0]);
                 this.updateTemplateList();
                 this.selectTemplate(template.manifest.id);
                 this.showSuccessMessage(`Template "${template.manifest.name}" imported successfully`);
