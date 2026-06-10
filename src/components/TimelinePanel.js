@@ -406,7 +406,6 @@ export class TimelinePanel {
         const lane = template.getLane(element.id, action);
         const laneLabel = action === 'in' ? 'In animation' : 'Out animation';
         const isActiveLane = element.id === this.selectedElementId && this.selectedLane === action;
-        const custom = lane.custom ? '<span class="timeline-custom-badge" title="Hand-tuned keyframes">Custom</span>' : '';
 
         const empty = lane.keyframes.length === 0
             ? `<span class="timeline-lane-empty">No keyframes. Move the playhead and add one.</span>`
@@ -426,7 +425,7 @@ export class TimelinePanel {
             <div class="timeline-lane ${isActiveLane ? 'active' : ''} ${action}" role="group"
                  aria-label="${laneLabel}"
                  data-lane-element="${this.escapeAttr(element.id)}" data-lane-action="${action}">
-                <span class="timeline-lane-tag">${action === 'in' ? 'In' : 'Out'}${custom}</span>
+                <span class="timeline-lane-tag">${action === 'in' ? 'In' : 'Out'}</span>
                 <div class="timeline-lane-track" style="width:${rulerPx}px">
                     ${empty}
                     ${diamonds}
@@ -954,6 +953,23 @@ export class TimelinePanel {
         this.runningAnimations.forEach(a => { try { a.cancel(); } catch (e) { /* ignore */ } });
         this.runningAnimations = [];
         this.cancelPlayheadSweep();
+    }
+
+    // Show or hide the whole panel. The Preview tab has its own Play/Stop
+    // transport that drives the live preview, so leaving the timeline's own
+    // Play/Stop visible there means two transports animating two different
+    // surfaces (the preview frame vs. the visual-editor canvas), which is
+    // confusing. We therefore hide the panel whenever the Preview tab is active.
+    // Hiding also tears down any in-flight local preview so a running canvas
+    // animation / playhead sweep never keeps going behind the hidden panel.
+    setVisible(visible) {
+        if (!this.panel) return;
+        if (visible) {
+            this.panel.style.display = '';
+        } else {
+            this.cancelLocalPreview();
+            this.panel.style.display = 'none';
+        }
     }
 
     // Tear down all live work (canvas animations + playhead sweep). Call when

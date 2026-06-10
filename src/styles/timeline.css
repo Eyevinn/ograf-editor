@@ -310,17 +310,6 @@
     outline-offset: 1px;
 }
 
-/* Custom badge (Advanced lane that is hand-tuned) */
-.timeline-custom-badge {
-    font-size: 0.6rem;
-    color: #ffd24f;
-    border: 1px solid #6a5a1f;
-    border-radius: 3px;
-    padding: 0 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-}
-
 /* Inspector */
 .timeline-inspector {
     margin-top: 10px;
