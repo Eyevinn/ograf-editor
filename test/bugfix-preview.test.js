@@ -5,6 +5,8 @@ afterEach(() => {
   // Each test appends a fresh container; clear the body so duplicate ids from a
   // previous test cannot leak into the next one's lookups.
   document.body.innerHTML = '';
+  // Restore any console spies so suppression stays scoped to the test that set it.
+  vi.restoreAllMocks();
 });
 
 /**
@@ -117,6 +119,10 @@ describe('PreviewEngine.reloadComponent', () => {
   it('routes a recreate failure to showWebComponentError and resets play state', async () => {
     engine.isPlaying = true;
     engine.createPreviewContent = vi.fn().mockRejectedValue(new Error('boom'));
+    // showWebComponentError logs the failure via console.error by design; this
+    // test drives that path on purpose, so silence the expected log to keep the
+    // test output clean (we still assert the handler was reached below).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const spy = vi.spyOn(engine, 'showWebComponentError');
 
     engine.reloadComponent();

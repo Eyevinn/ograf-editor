@@ -98,6 +98,9 @@ describe('TemplateManager.loadFromStorage corruption handling', () => {
   });
 
   afterEach(() => {
+    // Clear the deliberately-corrupt entry so it cannot leak into later
+    // describes and surface as a stray "corrupt JSON" log under another test.
+    localStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -116,6 +119,10 @@ describe('TemplateManager.loadFromStorage corruption handling', () => {
 });
 
 describe('Spec manifest round-trip preserves authored elements', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('restores authored elements from v_ografEditorElements on bundle import', () => {
     const manager = new TemplateManager();
     const service = new ExportImportService(manager);
