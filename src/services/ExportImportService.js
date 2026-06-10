@@ -105,6 +105,21 @@ export class ExportImportService {
     // Import several files chosen together: the .ograf.json manifest plus its
     // .mjs component (or a .zip among the selection). Mirrors the zip path, the
     // manifest carries the authored elements/timeline; the .mjs is kept verbatim.
+    // Choose the component file from a list of names using the manifest's "main"
+    // field (matched by exact name or basename), falling back to the first
+    // .mjs/.js. Reading "main" avoids grabbing a lib/*.js by mistake.
+    pickComponentName(names, mainField) {
+        if (mainField) {
+            const m = String(mainField).toLowerCase();
+            const hit = names.find(n => {
+                const ln = n.toLowerCase();
+                return ln === m || ln.endsWith('/' + m) || ln.split('/').pop() === m;
+            });
+            if (hit) return hit;
+        }
+        return names.find(n => /\.(mjs|js)$/i.test(n));
+    }
+
     async importFromFiles(files) {
         const list = Array.from(files);
         const byExt = (re) => list.find(f => re.test((f.name || '').toLowerCase()));
@@ -116,11 +131,15 @@ export class ExportImportService {
         if (!manifestFile) {
             throw new Error('Select the .ograf.json manifest (optionally with its .mjs component).');
         }
-        const template = this.importFromJSON(await this.readFile(manifestFile));
+        const manifestText = await this.readFile(manifestFile);
+        const template = this.importFromJSON(manifestText);
 
-        const mjsFile = byExt(/\.(mjs|js)$/);
-        if (mjsFile) {
-            template.webComponent = await this.readFile(mjsFile);
+        let mainField;
+        try { mainField = JSON.parse(manifestText).main; } catch (e) { /* ignore */ }
+        const compName = this.pickComponentName(list.map(f => f.name || ''), mainField);
+        const compFile = compName ? list.find(f => (f.name || '') === compName) : null;
+        if (compFile) {
+            template.webComponent = await this.readFile(compFile);
             this.templateManager.saveToStorage();
         }
         return template;
@@ -138,10 +157,14 @@ export class ExportImportService {
         if (!manifestName) {
             throw new Error('No .ograf.json manifest found in the zip.');
         }
-        const template = this.importFromJSON(entries[manifestName]);
-        const mjsName = names.find(n => n.toLowerCase().endsWith('.mjs') || n.toLowerCase().endsWith('.js'));
-        if (mjsName && entries[mjsName]) {
-            template.webComponent = entries[mjsName];
+        const manifestText = entries[manifestName];
+        const template = this.importFromJSON(manifestText);
+
+        let mainField;
+        try { mainField = JSON.parse(manifestText).main; } catch (e) { /* ignore */ }
+        const compName = this.pickComponentName(names, mainField);
+        if (compName && entries[compName]) {
+            template.webComponent = entries[compName];
             this.templateManager.saveToStorage();
         }
         return template;

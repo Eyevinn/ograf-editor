@@ -120,7 +120,12 @@ export class TemplateManager {
                     id: OGrafTemplate.slugifyId(element.id)
                 }));
             } else {
-                template.elements = this.createElementsFromSchema(manifest);
+                // No ograf-editor authoring data: this is a code-first OGraf
+                // graphic (hand-written component, possibly with a lib/ of modules
+                // and resources). The visual editor cannot reverse-engineer
+                // arbitrary component code into editable elements, so refuse
+                // rather than fabricate a misleading reconstruction from the schema.
+                throw new Error('This graphic was not created in this editor (no ograf-editor authoring data), so it cannot be opened for visual editing. It can still run in any OGraf renderer.');
             }
             // Restore the authored timeline if it was persisted alongside the
             // elements, so a manifest/bundle round-trip keeps the animation
