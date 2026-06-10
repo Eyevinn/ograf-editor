@@ -1,253 +1,93 @@
 # OGraf Template Editor
 
-A web-based graphics template editor for broadcast based on the EBU OGraf standard. Create professional broadcast graphics without needing to be a graphic designer.
+A web-based graphics template editor for broadcast, built on the EBU OGraf standard. Author professional broadcast graphics, lower thirds, titles, bugs, and custom overlays, without writing code.
 
----
-<div align="center">
-
-## Quick Demo: Open Source Cloud
-
-Run this service in the cloud with a single click.
-
-[![Badge OSC](https://img.shields.io/badge/Try%20it%20out!-1E3A8A?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTIiIGZpbGw9InVybCgjcGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyKSIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjIiLz4KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyIiB4MT0iMTIiIHkxPSIwIiB4Mj0iMTIiIHkyPSIyNCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgo8c3RvcCBzdG9wLWNvbG9yPSIjQzE4M0ZGIi8+CjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzREQzlGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM+Cjwvc3ZnPgo=)](https://app.osaas.io/browse/eyevinn-ograf-editor)
-
-</div>
-
----
+Try it on [Eyevinn Open Source Cloud](https://app.osaas.io/browse/eyevinn-ograf-editor).
 
 ![OGraf Template Editor Screenshot](screenshot.png)
 
 ## Features
 
-### 🎨 Visual Editor
-- **Drag-and-drop interface** for creating graphics elements
-- **Real-time canvas preview** with visual element manipulation
-- **Element toolbar** with text, images, rectangles, and circles
-- **Property panel** for fine-tuning element styles and properties
-- **Responsive design** with proper layout handling
+- Visual editor: drag-and-drop text, images, rectangles, and circles on a 1920x1080 canvas, with a property panel for position, size, and style.
+- Keyframe timeline: per-element in and out animation lanes driven by the Web Animations API, with quick presets (fade, slide, pop) for non-developers and full keyframe editing (opacity, offset, scale, easing, delay) for fine control.
+- Code editor: Monaco-based editing of the OGraf manifest and the generated web component, with live validation.
+- Preview: play, stop, and update the graphic with sample data exactly as a renderer would.
+- Export and import: download a portable `.ograf.zip` bundle (manifest plus component) or the raw spec files, and re-import a bundle, manifest, or separate files.
 
-### 💻 Code Editor
-- **Monaco Editor integration** with full syntax highlighting
-- **JSON manifest editor** with real-time validation and error detection
-- **JavaScript component viewer** for generated web components
-- **Tabbed interface** switching between manifest and component code
-- **Professional code editing** with IntelliSense support
+## Getting started
 
-### 🎬 Preview Engine
-- **Real-time preview** with animation support
-- **Play/Stop controls** for testing graphic animations
-- **Dynamic data inputs** for testing template variables
-- **Animation controls** with configurable directions and timing
-- **Export functionality** for generating preview images
+Requires Node.js 16 or later and a modern browser (Chrome, Firefox, Safari, or Edge).
 
-### 📋 Template Management
-- **Template creation wizard** with predefined types
-- **Local storage persistence** for template management
-- **Import/Export functionality** for sharing templates
-- **Template validation** against OGraf specification
-- **Responsive template list** with proper scrolling
+```bash
+npm install
+npm run dev
+```
 
-### ⚙️ Advanced Animation System
-- **Slide animations** with 4-direction support (left, right, top, bottom)
-- **Independent slide-in/slide-out** direction controls  
-- **Configurable timing** functions (ease-in, ease-out, linear, ease-in-out)
-- **Real-time animation preview** in the preview engine
-- **OGraf-compliant custom actions** (slideIn, slideOut)
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js (version 16 or higher)
-- Modern web browser (Chrome, Firefox, Safari, or Edge)
-
-### Installation
-
-1. Clone or download this repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-4. Open your browser to `http://localhost:3000`
+Then open http://localhost:3000.
 
 ## Usage
 
-### Creating Your First Template
+1. Create a template and choose a type: Lower Third, Title, Bug, or Custom.
+2. Add and arrange elements in the visual editor, and bind dynamic values with `{{tokens}}` in the data inputs.
+3. Animate elements with the timeline presets, or open the timeline panel for keyframe-level control.
+4. Preview with sample data, then export the template as an `.ograf.zip` bundle.
 
-1. Click "Create Your First Template" or "New Template"
-2. Choose a template type:
-   - **Lower Third**: Name and title overlays
-   - **Title**: Full-screen title cards
-   - **Bug**: Small station logos/branding
-   - **Custom**: Start from scratch
+## OGraf compliance
 
-3. Fill in the template details and click "Create"
+The editor generates templates that conform to the [EBU OGraf v1 specification](https://ograf.ebu.io/v1/specification/docs/Specification.html).
 
-### Visual Editor
+- Manifest: a spec-clean `<id>.ograf.json` with the required fields (`$schema`, `id`, `name`, `main`, `supportsRealTime`/`supportsNonRealTime`) and honest `actionDurations`. Editor-only authoring data is stored under `v_` vendor keys, so the manifest stays `additionalProperties: false` valid.
+- Component: an ES module exporting a custom element with the OGraf lifecycle methods (`load`, `dispose`, `playAction`, `stopAction`, `updateAction`, `customAction`), each taking a params object and returning a status. Animations resolve when they actually finish and honor `skipAnimation`.
+- Runtime data is escaped before rendering, and image sources are restricted to `http(s)` and `data:image` URLs.
 
-- **Add Elements**: Use the toolbar to add text, images, rectangles, or circles
-- **Move Elements**: Click and drag elements to reposition them
-- **Resize Elements**: Select an element and drag the corner handles
-- **Delete Elements**: Select an element and press Delete key
+## Verifying an export
 
-### Property Panel
+Before trusting a template on air, verify the export independently. Validate against the Graphics part of the spec (stable), not the Control/Server API (still draft).
 
-- **Element Properties**: Modify position, size, and content of selected elements
-- **Style Properties**: Change colors, fonts, borders, and other visual styles
-- **Template Properties**: Configure data inputs for your template
+1. Schema validation. The manifest carries a `$schema` reference, so it validates machine-side:
 
-### Preview
+   ```bash
+   npx ajv-cli validate \
+     -s https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json \
+     -d "my-graphic.ograf.json" --spec=draft2020
+   ```
 
-- **Data Inputs**: Enter sample data to see how your template will look
-- **Play/Stop**: Test template animations and transitions
-- **Update**: Refresh preview with new data
+   Editors with JSON-schema support (such as VS Code) also pick up the `$schema` reference for inline validation.
 
-### Code Editor
+2. Reference checker. SuperFlyTV's [ograf-devtool](https://ograf-devtool.superfly.tv) loads a graphic from local disk, flags common compliance mistakes, and exercises play, stop, update, and custom actions.
 
-- **Manifest Tab**: Edit the OGraf manifest JSON directly
-- **Component Tab**: Modify the Web Component implementation
-- **Validation**: Real-time validation of your code
-
-### Export/Import
-
-- **Export**: Save templates as OGraf-compatible files
-- **Import**: Load existing OGraf templates
-- **Formats**: Support for JSON and OGraf bundle formats
-
-## OGraf Specification Compliance
-
-This editor generates templates that are **fully compliant** with the [EBU OGraf v1 specification](https://ograf.ebu.io/v1/specification/docs/Specification.html):
-
-### ✅ Manifest Compliance
-- **$schema**: Proper JSON schema validation
-- **Required fields**: id, name, main, supportsRealTime/supportsNonRealTime
-- **Custom actions**: Standardized slideIn/slideOut actions
-- **Data schema**: Proper parameter definitions for dynamic content
-- **Step count**: Single-step graphics support
-
-### ✅ Web Component Compliance
-- **HTMLElement inheritance**: Standard web component structure
-- **Shadow DOM**: Style encapsulation and isolation
-- **ES Module exports**: Proper module system compatibility
-- **Required lifecycle methods**:
-  - `load()`: Initialize the graphic
-  - `dispose()`: Clean up resources
-  - `playAction()`: Show/animate the graphic
-  - `stopAction()`: Hide the graphic
-  - `updateAction(data)`: Update with new data
-  - `customAction(action, data)`: Handle custom actions
-
-### Template Structure
-Each template consists of:
-- **Manifest** (`.ograf.json`): Metadata and schema definition
-- **Web Component** (`.mjs`): HTML/CSS/JavaScript implementation
-- **Generated code**: Fully compliant with OGraf rendering systems
-
-## Verifying Your Export
-
-The editor produces a spec-clean manifest, but before you trust a template on air it is worth verifying the export independently. There are three levels, from quickest to most complete. If a template passes all three, it is compatible in practice.
-
-Validate against the **Graphics** part of the spec (stable since 2025-09-17), not the Control/Server API, which is still draft and may change into mid-2026.
-
-### 1. JSON Schema validation of the manifest
-
-The manifest carries a `$schema` field pointing at the normative schema, so you can validate it machine-side:
-
-```bash
-npx ajv-cli validate \
-  -s https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json \
-  -d "my-graphic.ograf.json" \
-  --spec=draft2020
-```
-
-Because the manifest must be named `*.ograf.json`, editors with JSON-schema support (such as VS Code) pick up the `$schema` reference automatically and give you inline validation while you edit. Note that this validates the manifest only, not that the web component actually implements `load()`, `dispose()`, `playAction()`, `stopAction()`, and `updateAction()` correctly. The devtool below covers that.
-
-### 2. OGraf Devtool (reference checker)
-
-SuperFlyTV's [ograf-devtool](https://ograf-devtool.superfly.tv) is the working group's reference tool. It loads and renders OGraf graphics directly from your local disk via the File System Access API, runs checks for the common mistakes that make a graphic non-compliant, and gives you a control GUI to exercise play, stop, update, and custom actions for both real-time and non-real-time graphics. Point it at your exported folder and it reads your changes live as you edit.
-
-### 3. End-to-end test in a real renderer
-
-For a true end-to-end check, import your export into an independent renderer such as [SPX Graphics](https://www.spx.graphics/), which has built-in OGraf support, and confirm it actually plays out. This catches anything the schema and the devtool cannot.
-
-A practical workflow: ajv against the schema, then open the export in ograf-devtool and run its checks plus a playout test, then verify in SPX as an independent renderer.
-
-## Browser Compatibility
-
-- **Chrome 90+** (recommended for best Monaco Editor experience)
-- **Firefox 88+** (full feature support)
-- **Safari 14+** (Web Components and ES6 modules support)
-- **Edge 90+** (Chromium-based, full compatibility)
-
-### Requirements
-- **ES6 Modules**: For web component loading
-- **Custom Elements v1**: For OGraf web components
-- **Shadow DOM v1**: For style encapsulation
-- **Dynamic Imports**: For Monaco Editor loading
+3. Real renderer. Import the export into an independent renderer such as [SPX Graphics](https://www.spx.graphics/) and confirm it plays out.
 
 ## Development
 
-### Project Structure
+```bash
+npm run dev      # Start the dev server
+npm run build    # Production build
+npm run preview  # Preview the production build
+npm run lint     # ESLint
+npm test         # Run the test suite
+```
 
 ```
 src/
-├── components/          # UI components
-│   ├── VisualEditor.js   # Drag-and-drop editor
-│   ├── PropertyPanel.js  # Element properties
-│   ├── PreviewEngine.js  # Template preview
-│   └── CodeEditor.js     # Code editing
-├── models/              # Data models
-│   └── OGrafTemplate.js  # Template structure
-├── services/            # Business logic
-│   ├── TemplateManager.js      # Template CRUD
-│   └── ExportImportService.js  # File operations
-├── styles/              # CSS styles
-│   ├── main.css         # Base styles
-│   └── components.css   # Component styles
-└── main.js              # Application entry point
-```
-
-### Build Commands
-
-```bash
-npm run dev      # Start development server
-npm run build    # Build for production
-npm run preview  # Preview production build
-npm run lint     # Run ESLint
-npm run typecheck # Run TypeScript checks
+  components/   VisualEditor, PropertyPanel, PreviewEngine, CodeEditor, TimelinePanel
+  models/       OGrafTemplate (template structure, manifest, generated component)
+  services/     TemplateManager, ExportImportService
+  utils/        zip (bundle export/import)
+  styles/       CSS
+  main.js       Application entry point
 ```
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+Fork the repository, create a feature branch, and open a pull request. Keep `npm run lint` and `npm run build` green and add tests for behavior changes.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT. See [LICENSE](LICENSE).
 
 ## Resources
 
-- [EBU OGraf Specification](https://ograf.ebu.io/)
-- [OGraf GitHub Repository](https://github.com/ebu/ograf)
+- [EBU OGraf specification](https://ograf.ebu.io/)
+- [OGraf on GitHub](https://github.com/ebu/ograf)
 - [EBU Technology & Innovation](https://tech.ebu.ch/)
-
-## Support
-
-For issues and questions:
-- Check the documentation at [ograf.ebu.io](https://ograf.ebu.io/)
-- Review existing issues in the repository
-- Create a new issue with detailed information
-
----
-
-Built with ❤️ for the broadcast community
