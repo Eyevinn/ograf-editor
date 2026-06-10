@@ -71,6 +71,23 @@ export class OGrafTemplate {
             intervalMs: 5000,
             mapping: {}
         };
+
+        // Multi-step authoring (GAP-C). Stored on the manifest under the vendor
+        // key v_ografEditorSteps (additionalProperties:false safe via ^v_.*).
+        // Steps are an EDITOR-side concept; the spec only consumes the resulting
+        // stepCount, playAction goto/delta behaviour, and actionDurations. An
+        // empty steps array means the graphic is single-step (the original
+        // play-then-stop behaviour, stepCount 1). With N authored steps the
+        // generated playAction advances through them (goto absolute / delta
+        // relative) and stepCount is published as N. Shape:
+        //   { version:1, steps:[ { id, name,
+        //       visible:{ "<elementId>": true|false },   // omitted = visible
+        //       data:{ "<dataInputKey>": "<override>" } } ] }
+        // v1 transition model: snap between steps (the in/out animation lanes run
+        // only on first entry and final clear); per-step animated transitions are
+        // deferred. Confirmed editor conventions (spec-silent, 2026-06-10): stop
+        // resets to the start state; a computed target below 0 clamps to 0.
+        this.manifest.v_ografEditorSteps = { version: 1, steps: [] };
     }
 
     // The smallest poll interval we allow (ms). A faster poll hammers the feed
@@ -470,6 +487,9 @@ export class OGrafTemplate {
         if (timeline && timeline.elements && timeline.elements[elementId]) {
             delete timeline.elements[elementId];
         }
+        // Drop any per-step visibility entries for the removed element so steps
+        // do not reference an element that no longer exists.
+        this.getSteps().steps.forEach(step => { delete step.visible[elementId]; });
     }
 
     getElementById(elementId) {
@@ -541,6 +561,15 @@ export class OGrafTemplate {
             }
             timeline.elements = rebuilt;
         }
+
+        // 2b. Migrate per-step visibility entries to the new id so steps keep
+        //     hiding/showing the same element after a rename.
+        this.getSteps().steps.forEach(step => {
+            if (Object.prototype.hasOwnProperty.call(step.visible, oldId)) {
+                step.visible[newId] = step.visible[oldId];
+                delete step.visible[oldId];
+            }
+        });
 
         // 3. Regenerate styles + web component so `.element-<id>`,
         //    data-element-id, and the serialized timeline all reflect the new id.
@@ -895,6 +924,129 @@ export class OGrafTemplate {
         return dropped;
     }
 
+    // ---- Multi-step authoring (v_ografEditorSteps) -------------------------
+
+    // Always return a well-formed, normalized steps object, repairing older or
+    // partial shapes the same way getTimeline()/getDataSource() do. Each step is
+    // { id, name, visible:{}, data:{} }.
+    getSteps() {
+        let s = this.manifest.v_ografEditorSteps;
+        if (!s || typeof s !== 'object') {
+            s = { version: 1, steps: [] };
+            this.manifest.v_ografEditorSteps = s;
+        }
+        if (!Array.isArray(s.steps)) s.steps = [];
+        if (s.version !== 1) s.version = 1;
+        s.steps = s.steps.map((step, i) => {
+            const obj = (step && typeof step === 'object') ? step : {};
+            return {
+                id: (typeof obj.id === 'string' && obj.id) ? obj.id : `step_${i + 1}`,
+                name: (typeof obj.name === 'string' && obj.name) ? obj.name : `Step ${i + 1}`,
+                visible: (obj.visible && typeof obj.visible === 'object') ? obj.visible : {},
+                data: (obj.data && typeof obj.data === 'object') ? obj.data : {}
+            };
+        });
+        return s;
+    }
+
+    // Publish an honest stepCount: the authored step count, or 1 when no steps
+    // are authored (single-step graphic). Keeps manifest.stepCount in sync.
+    updateStepCount() {
+        const n = this.getSteps().steps.length;
+        this.manifest.stepCount = n > 0 ? n : 1;
+        return this.manifest.stepCount;
+    }
+
+    // Add a step (optionally named) and return it. A new step inherits all
+    // elements visible (empty visible map) and no data overrides.
+    addStep(name) {
+        const s = this.getSteps();
+        const index = s.steps.length;
+        const id = `step_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const step = {
+            id,
+            name: (name && String(name).trim()) || `Step ${index + 1}`,
+            visible: {},
+            data: {}
+        };
+        s.steps.push(step);
+        this.updateStepCount();
+        return step;
+    }
+
+    removeStep(index) {
+        const s = this.getSteps();
+        if (index < 0 || index >= s.steps.length) return false;
+        s.steps.splice(index, 1);
+        this.updateStepCount();
+        return true;
+    }
+
+    // Move a step to a new index (reorder), clamped. Returns the new index, or
+    // -1 if the source index was invalid.
+    moveStep(from, to) {
+        const s = this.getSteps();
+        if (from < 0 || from >= s.steps.length) return -1;
+        const dest = Math.max(0, Math.min(s.steps.length - 1, to));
+        const [step] = s.steps.splice(from, 1);
+        s.steps.splice(dest, 0, step);
+        return dest;
+    }
+
+    renameStep(index, name) {
+        const s = this.getSteps();
+        if (index < 0 || index >= s.steps.length) return false;
+        const trimmed = String(name == null ? '' : name).trim();
+        if (trimmed) s.steps[index].name = trimmed;
+        return true;
+    }
+
+    // Set an element's visibility for one step. The implicit default is visible;
+    // we only store an explicit `false`, and passing true deletes the entry so
+    // the map stays minimal. Returns false if the index is out of range.
+    setStepVisibility(index, elementId, visible) {
+        const s = this.getSteps();
+        if (index < 0 || index >= s.steps.length) return false;
+        const map = s.steps[index].visible;
+        if (visible === false) map[elementId] = false;
+        else delete map[elementId];
+        return true;
+    }
+
+    isElementVisibleAtStep(index, elementId) {
+        const step = this.getSteps().steps[index];
+        if (!step) return true;
+        return step.visible[elementId] !== false;
+    }
+
+    // Set or clear a per-step data override for a data-input key. A blank value
+    // clears the override (that input falls back to the base/operator value).
+    setStepData(index, dataKey, value) {
+        const s = this.getSteps();
+        if (index < 0 || index >= s.steps.length) return false;
+        const data = s.steps[index].data;
+        if (value === '' || value == null) delete data[dataKey];
+        else data[dataKey] = String(value);
+        return true;
+    }
+
+    // Drop step references to elements / data-inputs that no longer exist, so the
+    // embedded steps never reference a removed element or data key. Backstop for
+    // the explicit cleanup in removeElement / renameElementId / property edits.
+    reconcileSteps() {
+        const s = this.getSteps();
+        const elementIds = new Set(this.elements.map(el => el.id));
+        const properties = this.manifest.schema.properties || {};
+        s.steps.forEach(step => {
+            for (const id of Object.keys(step.visible)) {
+                if (!elementIds.has(id)) delete step.visible[id];
+            }
+            for (const key of Object.keys(step.data)) {
+                if (!(key in properties)) delete step.data[key];
+            }
+        });
+    }
+
     // The real length (ms) of an action across all elements: max over every
     // lane of (delay + last keyframe time). This is what feeds actionDurations
     // so the renderer schedules play/stop honestly.
@@ -1026,6 +1178,11 @@ export class OGrafTemplate {
         // references a data input that no longer exists.
         this.reconcileDataSourceMapping();
         const dataSourceData = JSON.stringify(this.getDataSource());
+        // Embed the authored steps and publish an honest stepCount. Reconcile
+        // first so steps never reference a removed element or data input.
+        this.reconcileSteps();
+        const stepCountValue = this.updateStepCount();
+        const stepsData = JSON.stringify(this.getSteps().steps);
 
         const className = this.safeClassName();
 
@@ -1074,6 +1231,15 @@ export default class ${className} extends HTMLElement {
         this.data = {};
         this.isVisible = false;
         this.currentStep = 0;
+        // Multi-step authoring (GAP-C). steps is the authored list; stepCount is
+        // the published count. With no steps the graphic is single-step and
+        // playAction keeps the original play-then-stop behaviour. activeStep is
+        // the index currently applied (null = none), and activeStepData is that
+        // step's data overlay, applied on top of this.data at interpolation.
+        this.steps = ${stepsData};
+        this.stepCount = ${stepCountValue};
+        this.activeStep = null;
+        this.activeStepData = {};
         this.elements = ${elementsData};
         // Authored animation timeline. Each element has an "in" lane (played by
         // playAction) and an "out" lane (played by stopAction). A lane is
@@ -1364,6 +1530,8 @@ export default class ${className} extends HTMLElement {
     async dispose(params = {}) {
         this.isVisible = false;
         this.currentStep = 0;
+        this.activeStep = null;
+        this.activeStepData = {};
         // Fully tear down the live-data poll loop and mark disposed so a fetch
         // that resolves after this point is a no-op (cannot write stale data).
         this.disposed = true;
@@ -1373,26 +1541,88 @@ export default class ${className} extends HTMLElement {
     }
 
     async playAction(params = {}) {
-        const { skipAnimation } = params;
+        const { goto, delta, skipAnimation } = params;
+
+        // Single-step graphic (no authored steps): original behaviour exactly,
+        // so existing one-shot templates are unchanged.
+        if (!this.steps || this.steps.length === 0) {
+            this.isVisible = true;
+            this.currentStep = 1;
+            this.render();
+            // Apply the in-animation's initial keyframe state synchronously,
+            // before paint, so a fade/slide-in element does not flash visible.
+            this.applyInitialState('in');
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await this.runActionAnimation('in', skipAnimation);
+            return { statusCode: 200, currentStep: this.currentStep };
+        }
+
+        // Multi-step. fromStart = not currently on air, i.e. the spec "start"
+        // state, where a plain play computes the target as (-1 + delta) = step 0.
+        const fromStart = !this.isVisible;
+        let target;
+        if (typeof goto === 'number' && goto >= 0) {
+            target = goto;                                  // goto: absolute (spec: only when >= 0)
+        } else {
+            const base = fromStart
+                ? -1
+                : (typeof this.currentStep === 'number' ? this.currentStep : -1);
+            target = base + (typeof delta === 'number' ? delta : 1);   // delta: relative, default 1
+        }
+        // Lower bound: clamp a target below 0 to 0 (editor convention; the spec
+        // defines no "transition to start". Confirmed spec-silent 2026-06-10).
+        if (target < 0) target = 0;
+
+        // Upper bound: target >= stepCount MUST transition to the end (spec).
+        if (target >= this.stepCount) {
+            await this.runActionAnimation('out', skipAnimation);
+            this.isVisible = false;
+            this.currentStep = undefined;
+            this.activeStep = null;
+            this.activeStepData = {};
+            this.shadowRoot.innerHTML = '';
+            return { statusCode: 200, currentStep: undefined };
+        }
+
         this.isVisible = true;
-        this.currentStep = 1;
-        this.render();
+        // Apply the target step's visibility + data overlay and render.
+        this.applyStep(target);
 
-        // Apply the in-animation's initial keyframe state to every element's
-        // inline style NOW, synchronously, before the browser paints and before
-        // the rAF below. Otherwise the resting (visible) frame paints first and a
-        // fade-in/slide-in element flashes visible before the WAAPI animation
-        // hides it, and stays visible during a lane delay.
-        this.applyInitialState('in');
+        if (fromStart) {
+            // First entry plays the authored "in" animation, like single-step.
+            this.applyInitialState('in');
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await this.runActionAnimation('in', skipAnimation);
+        }
+        // Step-to-step advances snap (v1 transition model): applyStep already
+        // re-rendered with the new visibility/data; no animation between steps.
 
-        // Wait one frame so the rendered elements are laid out before the Web
-        // Animations API reads/animates them.
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        // Run the authored "in" timeline and resolve ONLY when it finishes (or
-        // immediately, snapped to the end, when skipAnimation is true).
-        await this.runActionAnimation('in', skipAnimation);
-
+        this.currentStep = target;
         return { statusCode: 200, currentStep: this.currentStep };
+    }
+
+    // Apply a step's data overlay and visibility, then render. The overlay is
+    // layered on top of this.data (operator/feed) at interpolation time, so
+    // switching steps never mutates the base data and earlier steps stay
+    // reproducible. Visibility is applied by render() -> applyStepVisibility().
+    applyStep(index) {
+        const step = this.steps[index] || null;
+        this.activeStep = step ? index : null;
+        this.activeStepData = (step && step.data) ? step.data : {};
+        this.render();
+    }
+
+    // Hide elements the active step marks not-visible. The implicit default is
+    // visible, so only an explicit false hides. No-op for single-step graphics
+    // (activeStep null), so their render is unchanged.
+    applyStepVisibility() {
+        if (this.activeStep === null || !this.steps[this.activeStep]) return;
+        const visible = this.steps[this.activeStep].visible || {};
+        const nodes = this.shadowRoot.querySelectorAll('.element');
+        nodes.forEach(node => {
+            const id = node.getAttribute('data-element-id');
+            node.style.display = (visible[id] === false) ? 'none' : '';
+        });
     }
 
     async stopAction(params = {}) {
@@ -1403,7 +1633,13 @@ export default class ${className} extends HTMLElement {
         await this.runActionAnimation('out', skipAnimation);
 
         this.isVisible = false;
-        this.currentStep = 0;
+        // Reset to the start state. For a multi-step graphic currentStep goes
+        // back to undefined so the next plain play re-enters at step 0 (editor
+        // convention; the spec is silent on post-stop step state, confirmed
+        // 2026-06-10). Single-step keeps the original currentStep = 0.
+        this.currentStep = (this.steps && this.steps.length) ? undefined : 0;
+        this.activeStep = null;
+        this.activeStepData = {};
 
         // Stop polling when the graphic goes off air. The timer restarts on the
         // next load. We do NOT set disposed here (stop is reversible; dispose is
@@ -1609,6 +1845,10 @@ export default class ${className} extends HTMLElement {
                 \${elements}
             </div>
         \`;
+
+        // Re-apply the active step's element visibility after every render, so a
+        // data-driven re-render keeps the current step's show/hide state.
+        this.applyStepVisibility();
     }
 
     renderElement(element) {
@@ -1662,22 +1902,32 @@ export default class ${className} extends HTMLElement {
     // with no token) or a literal hostile image src would bypass escaping
     // entirely, since a token-only replace leaves the literal segments untouched.
     interpolateContent(content, context = 'text') {
+        // Token resolution layers the active step's data overlay (GAP-C) over the
+        // base operator/feed data: step override wins, then base data, then the
+        // unresolved token is left in place. The escaping below is unchanged from
+        // the whole-content hardening (escape/validate the ENTIRE string, not just
+        // the token substitutions), so step data goes through the same path.
         const tokenRe = /\\{\\{(\\w+)\\}\\}/g;
+        const stepData = this.activeStepData || {};
         if (context === 'src') {
             // Resolve every token to its raw value, then validate the ENTIRE
             // assembled URL as one unit: a scheme like javascript: is rejected
             // whether it came from a literal or a token (safeSrc blanks it).
-            const resolved = String(content).replace(tokenRe, (match, key) => (
-                key in this.data ? String(this.data[key]) : ''
-            ));
+            const resolved = String(content).replace(tokenRe, (match, key) => {
+                if (key in stepData) return String(stepData[key]);
+                if (key in this.data) return String(this.data[key]);
+                return '';
+            });
             return safeSrc(resolved);
         }
         // Text: escape the entire literal content first ({{key}} survives because
         // braces and word chars are not escaped), then replace each token with its
         // escaped value. An unresolved token stays as the (escaped) literal.
-        return escapeHtml(content).replace(tokenRe, (match, key) => (
-            key in this.data ? escapeHtml(this.data[key]) : match
-        ));
+        return escapeHtml(content).replace(tokenRe, (match, key) => {
+            if (key in stepData) return escapeHtml(stepData[key]);
+            if (key in this.data) return escapeHtml(this.data[key]);
+            return match;
+        });
     }
 
     kebabCase(str) {
@@ -1775,6 +2025,10 @@ export default class ${className} extends HTMLElement {
             template.applyPresetToTimeline(true);
         }
         template.updateActionDurations();
+        // Repair/normalize the steps shape (imported or older saved templates may
+        // lack v_ografEditorSteps) and keep stepCount honest with the steps.
+        template.getSteps();
+        template.updateStepCount();
         return template;
     }
 }
