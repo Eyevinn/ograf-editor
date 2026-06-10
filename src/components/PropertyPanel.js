@@ -35,6 +35,18 @@ export class PropertyPanel {
         this.visualEditor.container.addEventListener('elementDeselected', () => {
             this.setCurrentElement(null);
         });
+
+        // A local image file dropped onto an image element on the canvas. The
+        // editor has already selected the target element; embed the file
+        // through the same path the file picker uses.
+        this.visualEditor.container.addEventListener('imageFileDropped', (e) => {
+            const { elementId, file } = e.detail || {};
+            if (!file) return;
+            if (this.currentElement !== elementId) {
+                this.setCurrentElement(elementId);
+            }
+            this.handleImageFile(file);
+        });
     }
 
     setCurrentElement(elementId) {
@@ -791,24 +803,36 @@ export class PropertyPanel {
     }
 
     renderContentProperties(element) {
-        if (element.type === 'text' || element.type === 'image') {
-            const label = element.type === 'text' ? 'Text Content' : 'Image URL';
-            const inputType = element.type === 'text' ? 'textarea' : 'input';
+        if (element.type === 'text') {
             const safeContent = escapeHtml(element.content || '');
-            const inputElement = element.type === 'text' ?
-                `<textarea class="property-input" data-property="content" rows="3">${safeContent}</textarea>` :
-                `<input type="url" class="property-input" data-property="content" value="${safeContent}" placeholder="Enter image URL">`;
-
-            const insertControl = element.type === 'text'
-                ? this.renderInsertDataInputControl()
-                : '';
-
             return `
                 <div class="property-group">
-                    <label>${label}</label>
-                    ${inputElement}
+                    <label>Text Content</label>
+                    <textarea class="property-input" data-property="content" rows="3">${safeContent}</textarea>
                 </div>
-                ${insertControl}
+                ${this.renderInsertDataInputControl()}
+            `;
+        }
+
+        if (element.type === 'image') {
+            const safeContent = escapeHtml(element.content || '');
+            // Two ways to set the image: paste a URL / data URI in the text
+            // field, or pick a local file which is read as a data: URI and
+            // embedded so the exported template is self-contained. The hidden
+            // file input is triggered by a real <button> so it stays keyboard
+            // operable and carries an accessible name; the visible label is
+            // associated with the URL field via id/for.
+            return `
+                <div class="property-group">
+                    <label for="image-url-input">Image source</label>
+                    <input type="url" id="image-url-input" class="property-input" data-property="content" value="${safeContent}" placeholder="Paste an image URL or data URI">
+                    <small class="help-text">Paste a URL or data URI, or choose a local file to embed it in the template.</small>
+                    <div class="image-file-row">
+                        <button type="button" class="btn-choose-image-file" data-choose-image-file>Choose image file</button>
+                        <input type="file" class="image-file-input" data-image-file-input accept="image/*" aria-label="Choose image file to embed">
+                    </div>
+                    <p class="image-file-note" data-image-file-note role="status"></p>
+                </div>
             `;
         }
         return '';
@@ -1035,6 +1059,99 @@ export class PropertyPanel {
                 if (!select || !select.value) return;
                 this.insertDataInputToken(select.value);
             });
+        }
+
+        // Image file picker. The button opens the hidden file input; picking a
+        // file reads it as a data: URI and commits it through the same content
+        // path the URL field uses, so preview/canvas/export all update.
+        const chooseImageBtn = container.querySelector('[data-choose-image-file]');
+        const imageFileInput = container.querySelector('[data-image-file-input]');
+        if (chooseImageBtn && imageFileInput) {
+            chooseImageBtn.addEventListener('click', () => imageFileInput.click());
+            imageFileInput.addEventListener('change', (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (file) {
+                    this.handleImageFile(file);
+                }
+                // Clear the input so picking the same file again re-fires change.
+                e.target.value = '';
+            });
+        }
+    }
+
+    // Maximum embedded image size. data: URIs inflate the template JSON and the
+    // localStorage autosave (the base64 encoding is ~33% larger than the file),
+    // so we warn above this threshold but still embed; only non-image types are
+    // rejected outright.
+    static IMAGE_SIZE_WARN_BYTES = 2 * 1024 * 1024;
+
+    // Read a picked image file as a data: URI and commit it as the element's
+    // content. Rejects non-image types with a clear message; warns (but still
+    // embeds) when the file is large enough to bloat the template/storage.
+    handleImageFile(file) {
+        if (!this.currentElement) return;
+
+        // Only accept images. accept="image/*" is a hint the file dialog may
+        // not enforce (and drag-drop bypasses it), so check the type here too.
+        if (!file.type || !file.type.startsWith('image/')) {
+            this.setImageFileNote('That file is not an image. Choose a PNG, JPG, SVG, GIF or WebP.', 'error');
+            this.notifyError('That file is not an image. Choose an image file (PNG, JPG, SVG, GIF or WebP).');
+            return;
+        }
+
+        const overLimit = file.size > PropertyPanel.IMAGE_SIZE_WARN_BYTES;
+
+        const reader = new FileReader();
+        reader.onerror = () => {
+            this.setImageFileNote('Could not read that file. Try another image.', 'error');
+            this.notifyError('Could not read that image file. Try another one.');
+        };
+        reader.onload = () => {
+            const dataUri = reader.result;
+            if (typeof dataUri !== 'string' || !dataUri.startsWith('data:image/')) {
+                this.setImageFileNote('That file could not be embedded as an image.', 'error');
+                this.notifyError('That file could not be embedded as an image.');
+                return;
+            }
+
+            // Commit through the same content path the URL field uses, so the
+            // canvas, preview and export all pick it up.
+            this.visualEditor.updateSelectedElement({ content: dataUri });
+
+            const sizeKb = Math.round(file.size / 1024);
+            if (overLimit) {
+                const msg = `Embedded ${file.name} (${sizeKb} KB). This is large; it will bloat the template file and may slow autosave.`;
+                this.setImageFileNote(msg, 'warn');
+                this.notifyError(`Embedded a large image (${sizeKb} KB). Large images bloat the template and may slow autosave.`);
+            } else {
+                this.setImageFileNote(`Embedded ${file.name} (${sizeKb} KB).`, 'ok');
+            }
+
+            // Re-render so the URL field shows the new data URI value.
+            this.render();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // Show an inline status under the file picker. The element has
+    // role="status" so the message is announced to assistive tech.
+    setImageFileNote(message, kind) {
+        const note = this.container.querySelector('[data-image-file-note]');
+        if (!note) return;
+        note.textContent = message;
+        note.classList.remove('image-file-note-error', 'image-file-note-warn', 'image-file-note-ok');
+        if (kind === 'error') note.classList.add('image-file-note-error');
+        else if (kind === 'warn') note.classList.add('image-file-note-warn');
+        else if (kind === 'ok') note.classList.add('image-file-note-ok');
+    }
+
+    // Surface a transient toast through the app shell's error-message channel
+    // (the same window.ografEditor instance refreshTimelinePanel uses). Safe to
+    // call when the shell is absent (e.g. in unit tests).
+    notifyError(message) {
+        const app = window.ografEditor;
+        if (app && typeof app.showErrorMessage === 'function') {
+            app.showErrorMessage(message);
         }
     }
 

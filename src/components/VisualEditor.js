@@ -29,6 +29,8 @@ export class VisualEditor {
         this._onMouseUp = this.handleMouseUp.bind(this);
         this._onKeyDown = this.handleKeyDown.bind(this);
         this._onWheel = this.handleWheel.bind(this);
+        this._onDragOver = this.handleDragOver.bind(this);
+        this._onDrop = this.handleDrop.bind(this);
 
         this.init();
     }
@@ -71,6 +73,42 @@ export class VisualEditor {
 
         // Zoom and pan
         this.container.addEventListener('wheel', this._onWheel);
+
+        // Drag-and-drop a local image file onto an image element to embed it.
+        this.canvas.addEventListener('dragover', this._onDragOver);
+        this.canvas.addEventListener('drop', this._onDrop);
+    }
+
+    // Allow dropping a file onto the canvas. We only flag a copy when the drag
+    // carries files, so a normal element drag inside the canvas is unaffected.
+    handleDragOver(e) {
+        if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+        }
+    }
+
+    // Drop a local image file onto an image element to set its content. We
+    // resolve the target element under the drop point; if it is an image
+    // element we select it and hand the file to whoever owns the embed logic
+    // (the Property Panel) via an event, so the size guard / type check / data
+    // URI commit live in one place.
+    handleDrop(e) {
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+
+        const canvasRect = this.canvas.getBoundingClientRect();
+        const canvasX = e.clientX - canvasRect.left;
+        const canvasY = e.clientY - canvasRect.top;
+        const hit = this.getElementAtPosition(canvasX, canvasY);
+
+        // Only act when dropping onto an image element; otherwise let the drop
+        // fall through (no-op) rather than guessing a target.
+        if (!hit || hit.element.type !== 'image') return;
+
+        e.preventDefault();
+        this.selectElement(hit.element.id);
+        this.dispatchEvent('imageFileDropped', { elementId: hit.element.id, file: files[0] });
     }
 
     handleMouseDown(e) {
@@ -103,7 +141,7 @@ export class VisualEditor {
         }
     }
 
-    handleMouseUp(e) {
+    handleMouseUp() {
         if (this.dragState) {
             this.endDrag();
         } else if (this.resizeState) {
@@ -549,5 +587,7 @@ export class VisualEditor {
         document.removeEventListener('mouseup', this._onMouseUp);
         document.removeEventListener('keydown', this._onKeyDown);
         this.container.removeEventListener('wheel', this._onWheel);
+        this.canvas.removeEventListener('dragover', this._onDragOver);
+        this.canvas.removeEventListener('drop', this._onDrop);
     }
 }
