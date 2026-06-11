@@ -27,6 +27,8 @@ npm run dev
 
 Then open http://localhost:3000.
 
+New here? Follow [GETTING_STARTED.md](GETTING_STARTED.md), a hands-on, build-along guide that walks you through creating, animating, previewing, live-data binding, and exporting your first template.
+
 ## Usage
 
 1. Create a template and choose a type: Lower Third, Title, Bug, or Custom.
