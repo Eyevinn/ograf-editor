@@ -1,5 +1,6 @@
 import { escapeHtml } from '../utils/escapeHtml.js';
 import { OGrafTemplate } from '../models/OGrafTemplate.js';
+import { EXAMPLE_FEEDS, getExampleFeed } from '../data/exampleFeeds.js';
 
 export class PropertyPanel {
     constructor(containerElement, visualEditor, templateManager) {
@@ -419,14 +420,35 @@ export class PropertyPanel {
         const intervalSec = Math.max(1, Math.round((ds.intervalMs || 5000) / 1000));
 
         const placeholderFor = (type) => {
-            if (type === 'csv') return 'https://example.com/feed.csv';
+            if (type === 'csv') return 'https://docs.host/data.csv';
             if (type === 'gsheet') return 'https://docs.google.com/.../pub?output=csv';
-            if (type === 'rss') return 'https://example.com/feed.xml';
-            return 'https://example.com/feed.json';
+            if (type === 'rss') return 'https://www.nasa.gov/feed/';
+            return 'https://catfact.ninja/fact';
         };
+
+        // If the current type+url match a catalog entry, surface its fields so
+        // the operator knows what to map. Matching by url keeps the hint visible
+        // across re-renders (the data source does not store the picked example).
+        const activeExample = EXAMPLE_FEEDS.find(
+            feed => feed.type === ds.type && feed.url === (ds.url || '')
+        );
+        const exampleOptions = EXAMPLE_FEEDS.map(feed =>
+            `<option value="${this.escapeAttr(feed.id)}">${this.escapeHtml(feed.label)}</option>`
+        ).join('');
+        const fieldsHint = activeExample
+            ? `<p class="live-data-fields-hint" data-live-data-fields-hint>Fields: ${this.escapeHtml(activeExample.fields.map(f => f.name).join(', '))}</p>`
+            : '';
 
         const body = enabled
             ? `
+                <div class="property-group">
+                    <label for="live-data-example">Load an example</label>
+                    <select id="live-data-example" class="property-input" data-live-data-example>
+                        <option value="">Choose an example feed...</option>
+                        ${exampleOptions}
+                    </select>
+                    ${fieldsHint}
+                </div>
                 <div class="property-group">
                     <label for="live-data-type">Source type</label>
                     <select id="live-data-type" class="property-input" data-live-data-field="type">
@@ -581,11 +603,54 @@ export class PropertyPanel {
             input.addEventListener('change', commit);
         });
 
+        // Example feed picker. Sets type + url, auto-maps the primary field to
+        // the first unmapped text input, then re-renders so the URL, fields
+        // hint, and mapping pills all reflect the chosen example.
+        const examplePicker = container.querySelector('[data-live-data-example]');
+        if (examplePicker) {
+            examplePicker.addEventListener('change', (e) => {
+                const feed = getExampleFeed(e.target.value);
+                if (!feed) return;
+                this.applyExampleFeed(feed);
+            });
+        }
+
         // Test connection.
         const testBtn = container.querySelector('[data-live-data-test]');
         if (testBtn) {
             testBtn.addEventListener('click', () => this.testLiveDataConnection(testBtn));
         }
+    }
+
+    // Apply a catalog example: set the source type + URL, then auto-map the
+    // example's primary field to the first currently-unmapped text data input
+    // for instant gratification. If no suitable input exists we leave mapping
+    // empty (the fields hint still tells the operator what they can map). All
+    // changes go through the same update path as manual edits, then re-render.
+    applyExampleFeed(feed) {
+        const template = this.templateManager.getCurrentTemplate();
+        if (!template) return;
+
+        template.updateDataSource({ type: feed.type, url: feed.url });
+
+        const properties = template.manifest.schema.properties || {};
+        const ds = template.getDataSource();
+        const firstUnmappedText = Object.keys(properties).find(key => {
+            const prop = properties[key] || {};
+            const isText = prop.type === 'string' || prop.type === undefined;
+            const alreadyMapped = typeof ds.mapping[key] === 'string' && ds.mapping[key] !== '';
+            return isText && !alreadyMapped;
+        });
+        if (firstUnmappedText) {
+            template.setDataSourceMapping(firstUnmappedText, feed.primaryField);
+        }
+
+        this.templateManager.saveToStorage();
+        template.generateWebComponent();
+        if (this.previewEngine) {
+            this.previewEngine.reloadComponent();
+        }
+        this.render();
     }
 
     updateLiveData(patch) {
