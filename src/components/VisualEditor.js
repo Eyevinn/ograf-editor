@@ -535,17 +535,58 @@ export class VisualEditor {
         });
     }
 
+    // Frame all elements (or the whole 1920x1080 canvas when there are none) so
+    // the user can recover from being lost in zoom/pan.
     fitToView() {
+        this.frameBox(this.getContentBounds());
+    }
+
+    // Frame the entire 1920x1080 canvas in the viewport, regardless of where the
+    // elements sit. Useful to get the whole work area back in view at once.
+    fitCanvasToView() {
+        this.frameBox({ minX: 0, minY: 0, maxX: 1920, maxY: 1080 });
+    }
+
+    // Scale and center an arbitrary canvas-space box in the viewport. The canvas
+    // transform is scale(s) translate(t) with transform-origin top-left, so a
+    // canvas point p renders at s*(p + t); solving for t centers the box.
+    frameBox(box) {
         const containerRect = this.container.getBoundingClientRect();
-        const canvasWidth = 1920;
-        const canvasHeight = 1080;
-        
-        const scaleX = (containerRect.width - 40) / canvasWidth;
-        const scaleY = (containerRect.height - 40) / canvasHeight;
-        
-        this.scale = Math.min(scaleX, scaleY, 1);
-        this.panOffset = { x: 0, y: 0 };
+        const pad = 40;
+
+        const contentWidth = Math.max(box.maxX - box.minX, 1);
+        const contentHeight = Math.max(box.maxY - box.minY, 1);
+
+        const scaleX = (containerRect.width - pad * 2) / contentWidth;
+        const scaleY = (containerRect.height - pad * 2) / contentHeight;
+        // Cap at 1 so framing a small box does not blow it up past actual size;
+        // it just gets centered. Floor at 0.1 to match the wheel-zoom range.
+        this.scale = Math.max(0.1, Math.min(scaleX, scaleY, 1));
+
+        const centerX = (box.minX + box.maxX) / 2;
+        const centerY = (box.minY + box.maxY) / 2;
+        this.panOffset = {
+            x: (containerRect.width / 2) / this.scale - centerX,
+            y: (containerRect.height / 2) / this.scale - centerY
+        };
         this.updateTransform();
+    }
+
+    // Bounding box of all elements, falling back to the full canvas when empty.
+    getContentBounds() {
+        const template = this.templateManager.getCurrentTemplate();
+        const elements = (template && template.elements) || [];
+        if (elements.length === 0) {
+            return { minX: 0, minY: 0, maxX: 1920, maxY: 1080 };
+        }
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        elements.forEach(el => {
+            minX = Math.min(minX, el.x);
+            minY = Math.min(minY, el.y);
+            maxX = Math.max(maxX, el.x + el.width);
+            maxY = Math.max(maxY, el.y + el.height);
+        });
+        return { minX, minY, maxX, maxY };
     }
 
     resetView() {

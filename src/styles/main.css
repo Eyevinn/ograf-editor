@@ -246,16 +246,27 @@ body.panel-resizing {
 .canvas-container {
     flex: 1;
     position: relative;
-    overflow: auto;
+    /* Pan and zoom are driven entirely by the canvas CSS transform (see
+       VisualEditor.handleWheel). Native scrolling is hidden so it cannot fight
+       the transform: a scaled-down canvas keeps a full-size layout box, which
+       otherwise leaves an empty, scrollable gray area around the work area. */
+    overflow: hidden;
     background-color: #1e1e1e;
 }
 
 .graphics-canvas {
     min-height: 100%;
-    background-image: 
-        linear-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+    /* A solid fill plus a clear border and drop shadow so the 1920x1080 work
+       area reads as a distinct "page" floating on the dark canvas area. Without
+       it the grid just fades into the surrounding gray and it is not obvious
+       where the deliverable frame begins and ends. */
+    background-color: #161616;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
     background-size: 20px 20px;
+    border: 1px solid #3a3a3a;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 8px 30px rgba(0, 0, 0, 0.45);
     position: relative;
 }
 
@@ -276,6 +287,16 @@ body.panel-resizing {
     display: flex;
     gap: 10px;
     flex-shrink: 0;
+}
+
+/* Zoom controls sit at the far right of the toolbar, set off from the
+   element-add buttons by a thin divider. */
+.canvas-zoom-controls {
+    display: flex;
+    gap: 10px;
+    margin-left: auto;
+    padding-left: 12px;
+    border-left: 1px solid #404040;
 }
 
 .tool-btn {
@@ -338,7 +359,11 @@ body.panel-resizing {
 
 .preview-frame {
     flex: 1;
-    background-color: #000000;
+    /* Gray surround (not black) with padding so the black 1920x1080 broadcast
+       frame inside reads as a distinct, bounded screen. A black frame on a black
+       area is impossible to tell apart from its surroundings. */
+    background-color: #1e1e1e;
+    padding: 16px;
     position: relative;
     overflow: hidden;
 }
@@ -529,17 +554,18 @@ body.panel-resizing {
 
 .graphics-element .resize-handle {
     position: absolute;
-    width: 8px;
-    height: 8px;
+    width: 14px;
+    height: 14px;
     background-color: #007acc;
-    border: 1px solid #ffffff;
-    border-radius: 2px;
+    border: 2px solid #ffffff;
+    border-radius: 3px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
 }
 
-.graphics-element .resize-handle.nw { top: -4px; left: -4px; cursor: nw-resize; }
-.graphics-element .resize-handle.ne { top: -4px; right: -4px; cursor: ne-resize; }
-.graphics-element .resize-handle.sw { bottom: -4px; left: -4px; cursor: sw-resize; }
-.graphics-element .resize-handle.se { bottom: -4px; right: -4px; cursor: se-resize; }
+.graphics-element .resize-handle.nw { top: -7px; left: -7px; cursor: nw-resize; }
+.graphics-element .resize-handle.ne { top: -7px; right: -7px; cursor: ne-resize; }
+.graphics-element .resize-handle.sw { bottom: -7px; left: -7px; cursor: sw-resize; }
+.graphics-element .resize-handle.se { bottom: -7px; right: -7px; cursor: se-resize; }
 
 /* Template list items */
 .template-item {

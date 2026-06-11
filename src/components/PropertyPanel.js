@@ -37,6 +37,13 @@ export class PropertyPanel {
             this.setCurrentElement(null);
         });
 
+        // A deleted element has no properties to show. Without this the panel
+        // would keep rendering the removed element's fields (it only re-renders
+        // on select/deselect otherwise), so fall back to the template view.
+        this.visualEditor.container.addEventListener('elementDeleted', () => {
+            this.setCurrentElement(null);
+        });
+
         // A local image file dropped onto an image element on the canvas. The
         // editor has already selected the target element; embed the file
         // through the same path the file picker uses.
@@ -47,6 +54,31 @@ export class PropertyPanel {
                 this.setCurrentElement(elementId);
             }
             this.handleImageFile(file);
+        });
+
+        // Keep the Position & Size fields live while the element is dragged or
+        // resized on the canvas. updateElementPosition/Bounds fire elementUpdated
+        // on every move tick, so we patch the four inputs in place instead of
+        // re-rendering the whole panel (which would clobber focus and churn the
+        // DOM on every pixel of a drag).
+        this.visualEditor.container.addEventListener('elementUpdated', (e) => {
+            this.syncElementGeometry(e.detail || {});
+        });
+    }
+
+    // Live-update the X / Y / Width / Height inputs from a canvas drag or resize
+    // without a full re-render. No-op unless the moved element is the one shown,
+    // and we skip any field the user is currently editing so we never yank a
+    // value out from under the keyboard.
+    syncElementGeometry(detail) {
+        const { elementId } = detail;
+        if (!elementId || elementId !== this.currentElement) return;
+        ['x', 'y', 'width', 'height'].forEach(prop => {
+            if (detail[prop] === undefined) return;
+            const input = this.container.querySelector(`[data-property="${prop}"]`);
+            if (input && document.activeElement !== input) {
+                input.value = detail[prop];
+            }
         });
     }
 
@@ -135,7 +167,6 @@ export class PropertyPanel {
                 <p class="section-description">Pick how the graphic animates in and out. For fine control, use the Timeline panel at the bottom.</p>
 
                 ${this.renderPresetChips(template, animationSettings)}
-                ${this.renderCustomBadgeNote(template)}
 
                 <div class="property-group">
                     <label>Slide In Duration (ms)</label>
@@ -231,24 +262,6 @@ export class PropertyPanel {
         `;
     }
 
-    // Show which elements carry hand-tuned (custom) lanes, so the operator knows
-    // a Simple preset will not silently overwrite them.
-    renderCustomBadgeNote(template) {
-        const timeline = template.getTimeline();
-        const customIds = Object.entries(timeline.elements || {})
-            .filter(([, entry]) => (entry.in && entry.in.custom) || (entry.out && entry.out.custom))
-            .map(([id]) => id);
-        if (customIds.length === 0) return '';
-        const badges = customIds
-            .map(id => `<span class="custom-badge" title="Hand-tuned in the Timeline panel">${this.escapeHtml(id)} <strong>Custom</strong></span>`)
-            .join('');
-        return `
-            <div class="property-group custom-lane-note">
-                <p class="help-text">These elements have custom keyframes. A preset will ask before replacing them.</p>
-                <div class="custom-badges">${badges}</div>
-            </div>
-        `;
-    }
 
     // Make the template-level sections collapsible so the narrow sidebar is not
     // crowded by Template Properties, Animation Settings, and Data Inputs all at
@@ -581,8 +594,12 @@ export class PropertyPanel {
             }
             if (field === 'interval') {
                 input.addEventListener('change', (e) => {
-                    const sec = Number(e.target.value);
-                    if (!Number.isFinite(sec) || sec < 1) return;
+                    // Clamp to the 1 second minimum rather than rejecting bad
+                    // input, and reflect the clamped value back in the field so
+                    // it never keeps showing 0 or a negative the editor ignored.
+                    let sec = Number(e.target.value);
+                    if (!Number.isFinite(sec) || sec < 1) sec = 1;
+                    e.target.value = String(sec);
                     // Store the floored millisecond value (>= 1000).
                     this.updateLiveData({ intervalMs: Math.max(1000, Math.round(sec * 1000)) });
                 });
@@ -786,8 +803,20 @@ export class PropertyPanel {
     renderElementProperties(container, element) {
         container.innerHTML = `
             <div class="property-section">
-                <h4>Element Properties</h4>
-                
+                <button type="button" class="back-to-template" data-back-to-template>
+                    <span aria-hidden="true">&larr;</span> Template settings
+                </button>
+                <div class="element-properties-header">
+                    <h4>Element Properties</h4>
+                    <button type="button" class="btn-delete-element" data-delete-element title="Delete element" aria-label="Delete element">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4h8v2" />
+                            <path d="M6 6l1 14h10l1-14" />
+                        </svg>
+                    </button>
+                </div>
+
                 <div class="property-group">
                     <label for="element-id-input">Element ID</label>
                     <input type="text" id="element-id-input" class="property-input element-id-input" data-element-id-input value="${escapeHtml(element.id)}" autocomplete="off" spellcheck="false" aria-describedby="element-id-help">
@@ -1576,6 +1605,26 @@ export class PropertyPanel {
     }
 
     setupPropertyEventListeners(container) {
+        // Back to template settings: deselect the element so the panel shows the
+        // template-level sections (Data Inputs, Live Data, Steps). These live in
+        // the same panel and are otherwise only reachable by guessing to click
+        // empty canvas, so give them an explicit way back.
+        const backBtn = container.querySelector('[data-back-to-template]');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => this.visualEditor.deselectElement());
+        }
+
+        // Delete element: a visible alternative to the Delete key, which is the
+        // only way to remove an element otherwise. Routes through the visual
+        // editor so it shares the same removal + save + event path.
+        const deleteBtn = container.querySelector('[data-delete-element]');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', () => {
+                this.visualEditor.selectedElement = this.currentElement;
+                this.visualEditor.deleteSelectedElement();
+            });
+        }
+
         // Element ID. Editable, but commits on change/blur only, never per
         // keystroke, so a half-typed id is not treated as a rename. The id is a
         // CSS class segment and the timeline-lane key, not a data token, so a
@@ -1958,7 +2007,8 @@ export class PropertyPanel {
         this.refreshTimelinePanel();
 
         // If a setting changed but some lanes were skipped because they are
-        // custom, let the user know (and re-render to show the Custom badges).
+        // custom (hand-tuned in the Timeline panel), re-render so the panel
+        // reflects the unchanged state.
         if (skipped.length > 0) {
             this.render();
         }
