@@ -71,7 +71,9 @@ export class PreviewEngine {
         this.previewFrame.className = 'preview-container-div';
         this.previewFrame.style.width = '100%';
         this.previewFrame.style.height = '100%';
-        this.previewFrame.style.backgroundColor = '#000000';
+        // Transparent so the gray .preview-frame surround shows around the black
+        // broadcast frame; the broadcast frame itself supplies its own black.
+        this.previewFrame.style.backgroundColor = 'transparent';
         this.previewFrame.style.position = 'relative';
         this.previewFrame.style.overflow = 'hidden';
         
@@ -216,20 +218,45 @@ export class PreviewEngine {
             const label = document.createElement('label');
             label.textContent = `${prop.title || key}:`;
 
+            // Match the operator control to the declared data-input type so the
+            // preview is faithful to what the operator sees at run time: a number
+            // spinner for number, a checkbox for boolean, text otherwise.
+            const type = prop.type || 'string';
             const input = document.createElement('input');
-            input.type = 'text';
             input.className = 'data-input';
             input.dataset.property = key;
-            input.value = currentValue;
-            input.placeholder = (prop.default !== undefined && prop.default !== null)
-                ? prop.default
-                : '';
 
-            // Re-bind the change/input listener on the created input.
-            input.addEventListener('input', (e) => {
-                this.previewData[e.target.dataset.property] = e.target.value;
-                this.updatePreviewData();
-            });
+            if (type === 'boolean') {
+                input.type = 'checkbox';
+                input.checked = currentValue === true || currentValue === 'true';
+                input.addEventListener('change', (e) => {
+                    this.previewData[e.target.dataset.property] = e.target.checked;
+                    this.updatePreviewData();
+                });
+            } else if (type === 'number') {
+                input.type = 'number';
+                input.value = currentValue;
+                input.placeholder = (prop.default !== undefined && prop.default !== null)
+                    ? prop.default
+                    : '';
+                input.addEventListener('input', (e) => {
+                    // Keep an empty field as '' so the placeholder shows; otherwise
+                    // store a real number so token substitution is type-faithful.
+                    const raw = e.target.value;
+                    this.previewData[e.target.dataset.property] = raw === '' ? '' : Number(raw);
+                    this.updatePreviewData();
+                });
+            } else {
+                input.type = 'text';
+                input.value = currentValue;
+                input.placeholder = (prop.default !== undefined && prop.default !== null)
+                    ? prop.default
+                    : '';
+                input.addEventListener('input', (e) => {
+                    this.previewData[e.target.dataset.property] = e.target.value;
+                    this.updatePreviewData();
+                });
+            }
 
             group.appendChild(label);
             group.appendChild(input);
@@ -286,7 +313,10 @@ export class PreviewEngine {
             scaledContainer.style.top = '0';
             scaledContainer.style.left = '0';
             scaledContainer.style.backgroundColor = '#000000';
-            scaledContainer.style.border = '1px solid #333333';
+            // A visible edge + drop shadow so the broadcast frame stands off the
+            // gray surround (a near-black hairline border vanished against it).
+            scaledContainer.style.border = '1px solid #555555';
+            scaledContainer.style.boxShadow = '0 6px 24px rgba(0, 0, 0, 0.6)';
             
 
             // The component module is generated and imported in createPreviewComponent
@@ -673,7 +703,11 @@ export class PreviewEngine {
             Object.entries(data).forEach(([key, value]) => {
                 const input = dataInputsContainer.querySelector(`[data-property="${key}"]`);
                 if (input) {
-                    input.value = value;
+                    if (input.type === 'checkbox') {
+                        input.checked = value === true || value === 'true';
+                    } else {
+                        input.value = value;
+                    }
                 }
             });
         }

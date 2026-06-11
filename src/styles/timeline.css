@@ -411,29 +411,6 @@
     outline-offset: 2px;
 }
 
-.custom-lane-note .custom-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 6px;
-}
-
-.custom-badge {
-    font-size: 0.72rem;
-    color: #c0c0c0;
-    background-color: #2c2920;
-    border: 1px solid #6a5a1f;
-    border-radius: 4px;
-    padding: 2px 6px;
-}
-
-.custom-badge strong {
-    color: #ffd24f;
-    text-transform: uppercase;
-    font-size: 0.62rem;
-    letter-spacing: 0.4px;
-}
-
 @media (prefers-reduced-motion: reduce) {
     .preset-chip { transition: none !important; }
 }

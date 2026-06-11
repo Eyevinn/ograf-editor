@@ -249,6 +249,25 @@
     font-size: 0.8rem;
 }
 
+/* A checkbox must not stretch to fill the row (flex:1 would float the box
+   centered in a full-width control); keep it intrinsic size, left-aligned
+   right after its label. margin-right:auto consumes the leftover row width. */
+.data-input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin: 0 auto 0 0;
+    padding: 0;
+}
+
+/* A number rarely needs the full row; keep it compact and left-aligned, with
+   the leftover row width pushed to the right (margin-right:auto). */
+.data-input[type="number"] {
+    flex: 0 0 auto;
+    width: 120px;
+    margin-right: auto;
+}
+
 .preview-iframe {
     width: 100%;
     height: 100%;
@@ -653,6 +672,64 @@
 .btn-insert-data-input:focus-visible,
 .data-input-row .property-input:focus-visible,
 .insert-data-input-row .property-input:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
+/* Element properties: header row with title + delete, and the back link. */
+.element-properties-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.element-properties-header h4 {
+    margin: 0;
+}
+
+.back-to-template {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    padding: 4px 8px;
+    border: 1px solid #404040;
+    border-radius: 3px;
+    background-color: transparent;
+    color: #b0b0b0;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.back-to-template:hover {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    border-color: #007acc;
+}
+
+.btn-delete-element {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid #404040;
+    border-radius: 3px;
+    background-color: #2d2d2d;
+    color: #e0a0a0;
+    cursor: pointer;
+}
+
+.btn-delete-element:hover {
+    background-color: #4a2222;
+    border-color: #dc3545;
+    color: #ffffff;
+}
+
+.back-to-template:focus-visible,
+.btn-delete-element:focus-visible {
     outline: 2px solid #007acc;
     outline-offset: 2px;
 }

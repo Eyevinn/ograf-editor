@@ -298,13 +298,26 @@ class OGrafEditor {
     }
 
     setupToolbar() {
-        // Element toolbar buttons
+        // Element toolbar buttons. The data attribute lives on the <button>, but
+        // a click can land on the inner <svg>/<path>; read it off the button so
+        // the hit target inside the button does not matter.
         const toolButtons = document.querySelectorAll('.tool-btn');
         toolButtons.forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const elementType = e.target.dataset.element || e.target.parentElement.dataset.element;
-                if (elementType && this.visualEditor) {
+            btn.addEventListener('click', () => {
+                if (!this.visualEditor) return;
+                const elementType = btn.dataset.element;
+                if (elementType) {
                     this.visualEditor.addElement(elementType);
+                    return;
+                }
+                // Canvas zoom controls share the .tool-btn styling.
+                const action = btn.dataset.canvasAction;
+                if (action === 'fit') {
+                    this.visualEditor.fitToView();
+                } else if (action === 'fit-canvas') {
+                    this.visualEditor.fitCanvasToView();
+                } else if (action === 'reset') {
+                    this.visualEditor.resetView();
                 }
             });
         });

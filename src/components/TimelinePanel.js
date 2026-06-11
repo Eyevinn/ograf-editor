@@ -59,6 +59,10 @@ export class TimelinePanel {
         // leak or run two loops at once.
         this.playheadRAF = null;
 
+        // requestAnimationFrame id for a pending, coalesced re-render driven by
+        // canvas element events (see scheduleRender), cleared on destroy.
+        this.renderRAF = null;
+
         this.init();
     }
 
@@ -86,9 +90,22 @@ export class TimelinePanel {
             this.selectedElementId = null;
             this.render();
         });
-        // Element add/remove changes the track list.
+        // Element add/remove changes the track list, and a move/resize shifts
+        // nothing in the lanes but still arrives as elementUpdated on every drag
+        // tick. Coalesce to one render per frame so a drag does not rebuild the
+        // whole timeline dozens of times (the source of the drag-handler jank).
         ['elementAdded', 'elementDeleted', 'elementUpdated'].forEach(name => {
-            this.visualEditor.container.addEventListener(name, () => this.render());
+            this.visualEditor.container.addEventListener(name, () => this.scheduleRender());
+        });
+    }
+
+    // Coalesce canvas-driven re-renders into a single render on the next frame.
+    scheduleRender() {
+        if (this.renderRAF !== null && this.renderRAF !== undefined) return;
+        if (typeof requestAnimationFrame !== 'function') { this.render(); return; }
+        this.renderRAF = requestAnimationFrame(() => {
+            this.renderRAF = null;
+            this.render();
         });
     }
 
@@ -1030,6 +1047,10 @@ export class TimelinePanel {
     // the panel is removed so the rAF loop never outlives the panel.
     destroy() {
         this.cancelLocalPreview();
+        if (this.renderRAF !== null && this.renderRAF !== undefined) {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.renderRAF);
+            this.renderRAF = null;
+        }
     }
 
     // Mirror of the generated component's buildLaneEffect so the local preview
