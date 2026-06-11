@@ -96,7 +96,7 @@ Number inputs become numeric fields and Yes-No inputs become checkboxes (you wil
 
 1. Deselect elements so you see the template sections, expand **Animation (quick presets)**.
 2. Click a preset: **None**, **Fade**, **Slide**, or **Pop**. Each sets how the graphic enters and exits.
-3. With **Slide** active, adjust the In/Out **Duration**, **Timing**, and **Direction** dropdowns.
+3. With **Slide** active, adjust the In/Out **Duration** (a number field, in milliseconds) and the **Timing** and **Direction** dropdowns.
 
 For frame-accurate control, open the **Timeline** panel at the bottom: it has per-element keyframe lanes you can drag. (Re-applying a preset after hand-tuning a lane will ask before overwriting it.)
 
@@ -122,7 +122,7 @@ The editor can auto-fill data inputs from an external feed so the on-air graphic
 2. Use **Load an example** and pick **Cat Facts**. This sets the source type to JSON, fills the feed URL (`https://catfact.ninja/fact`), and auto-maps its `fact` field to your first text input.
    - Other examples: **Random Joke**, **Useless Facts**, **NASA Breaking News** (RSS).
 3. Click **Test connection**, it validates the URL and lists the fields the feed exposes.
-4. In the mapping table, map a feed field to each input you want fed (the pill flips to **Feed-driven**, and that input becomes read-only in Data Inputs since the feed now owns it).
+4. In the mapping table, map a feed field to each input you want fed (the pill flips to **Feed-driven**, and that input's default value becomes read-only in Data Inputs since the feed now owns it).
 5. Set **Refresh every (seconds)** (minimum 1). Go to **Preview** and watch the text refresh on each poll.
 
 If a refresh fails, the last good values stay on screen.
