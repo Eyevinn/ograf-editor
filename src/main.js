@@ -750,6 +750,45 @@ const additionalStyles = `
     color: #fff3cd;
     border-left-color: #ff9800;
 }
+
+/* Persistent OGraf-schema validity badge in the code editor tab bar. The
+   data-state attribute is the honest signal, driven by SchemaValidator. */
+.manifest-validity-badge {
+    margin-left: auto;
+    align-self: center;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    cursor: default;
+    border: 1px solid transparent;
+}
+
+.manifest-validity-badge[data-state="valid"] {
+    background-color: #16331c;
+    color: #a5d6a7;
+    border-color: #2e7d32;
+}
+
+.manifest-validity-badge[data-state="warning"] {
+    background-color: #332e16;
+    color: #ffe082;
+    border-color: #c9a227;
+}
+
+.manifest-validity-badge[data-state="invalid"] {
+    background-color: #331a1a;
+    color: #ef9a9a;
+    border-color: #c62828;
+}
+
+.manifest-validity-badge[data-state="unknown"] {
+    background-color: #2a2a2a;
+    color: #9e9e9e;
+    border-color: #444;
+}
 `;
 
 // Inject additional styles

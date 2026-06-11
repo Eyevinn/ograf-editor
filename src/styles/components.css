@@ -742,6 +742,13 @@
     line-height: 1.4;
 }
 
+.live-data-fields-hint {
+    font-size: 0.75rem;
+    color: #b0b0b0;
+    margin: 6px 0 0 0;
+    line-height: 1.4;
+}
+
 .live-data-mapping {
     margin-top: 12px;
     border-top: 1px solid #404040;
