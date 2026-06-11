@@ -118,7 +118,7 @@ The black frame is your 1920x1080 output, shown on a gray surround so you can se
 
 The editor can auto-fill data inputs from an external feed so the on-air graphic updates by itself. There is a built-in catalog of ready-to-use, CORS-open feeds to try.
 
-1. Back on the template sections (Preview's left panel, or the Visual Editor), expand **Live Data** and tick **Enable**.
+1. Back on the template sections (Preview's left panel, or the Visual Editor), expand **Live data** and tick **Enable**.
 2. Use **Load an example** and pick **Cat Facts**. This sets the source type to JSON, fills the feed URL (`https://catfact.ninja/fact`), and auto-maps its `fact` field to your first text input.
    - Other examples: **Random Joke**, **Useless Facts**, **NASA Breaking News** (RSS).
 3. Click **Test connection**, it validates the URL and lists the fields the feed exposes.
@@ -134,9 +134,9 @@ If a refresh fails, the last good values stay on screen.
 Steps let one template reveal in stages, each step can show or hide elements and override data.
 
 1. In the template sections, expand **Steps** and click **Add step** twice.
-2. Select a step, give it a **name**, untick an element under **Visible elements** to hide it at that step, and set a value under **Data overrides for this step** to change a value just for that step.
+2. Select a step, set its **Step name**, untick an element under **Visible elements** to hide it at that step, and set a value under **Data overrides for this step** to change a value just for that step.
 3. Reorder steps with the up/down arrows, delete with the x.
-4. In **Preview**, use **Prev / Next** to walk the steps. **Stop** returns to the start.
+4. The **Prev / Next** buttons (with a "Step X of N" indicator) sit at the bottom of the **Steps** section and drive the live Preview, so open the **Preview** tab to watch as you step through. **Stop** returns to the start.
 
 ---
 
