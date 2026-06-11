@@ -1,6 +1,7 @@
 import { saveAs } from 'file-saver';
 import { OGrafTemplate } from '../models/OGrafTemplate.js';
 import { createZip, readZip } from '../utils/zip.js';
+import { getSchemaValidator } from './SchemaValidator.js';
 
 export class ExportImportService {
     constructor(templateManager) {
@@ -267,10 +268,24 @@ export class ExportImportService {
     importRawManifest(manifest) {
         // Normalize the manifest to match our expected format
         const normalizedManifest = this.normalizeManifest(manifest);
-        
+
         // Create a basic web component if none exists
         const basicComponent = this.generateBasicComponent(normalizedManifest);
-        
+
+        // Validate against the OGraf schema AFTER normalization (normalizeManifest
+        // coerces e.g. author string -> { name, email }), so we judge what we are
+        // about to import, not the raw input. Hard schema errors block the import
+        // with a readable message instead of silently importing invalid data.
+        const result = getSchemaValidator().validateManifest(normalizedManifest, {
+            componentSource: basicComponent
+        });
+        if (!result.valid) {
+            const detail = result.errors
+                .map((e) => (e.path ? `${e.path}: ${e.message}` : e.message))
+                .join('; ');
+            throw new Error(`Manifest does not match the OGraf schema: ${detail}`);
+        }
+
         return this.templateManager.importTemplate(
             JSON.stringify(normalizedManifest),
             basicComponent
@@ -282,12 +297,46 @@ export class ExportImportService {
      */
     normalizeManifest(manifest) {
         const normalized = { ...manifest };
-        
+
+        // Complete a partial raw manifest into a spec-valid skeleton. A user can
+        // paste a minimal manifest (e.g. just id + name); the editor fills the
+        // OGraf-required fields the renderer needs. The defaults mirror exactly
+        // how a freshly-created template is built in OGrafTemplate's constructor
+        // (do not invent new conventions): same canonical $schema URL, the same
+        // "template.mjs" main filename, and the same support flags.
+
+        // $schema must equal the canonical OGraf URL (the schema pins it with a
+        // const). Set or correct it; a raw manifest's "x" or missing value would
+        // otherwise hard-fail the gate even though normalization can fix it.
+        const canonicalSchema =
+            'https://ograf.ebu.io/v1/specification/json-schemas/graphics/schema.json';
+        if (normalized.$schema !== canonicalSchema) {
+            normalized.$schema = canonicalSchema;
+        }
+
+        // main is the component filename the import will actually write: on
+        // export, TemplateManager writes the component under manifest.main, so
+        // main must name the file we generate. A freshly-created template uses
+        // "template.mjs"; match it so import and export stay consistent.
+        if (typeof normalized.main !== 'string' || normalized.main.length === 0) {
+            normalized.main = 'template.mjs';
+        }
+
+        // Support flags: the editor default is real-time yes, non-real-time no
+        // (matches OGrafTemplate's constructor). Only fill when absent so an
+        // imported manifest that declares them keeps its own values.
+        if (typeof normalized.supportsRealTime !== 'boolean') {
+            normalized.supportsRealTime = true;
+        }
+        if (typeof normalized.supportsNonRealTime !== 'boolean') {
+            normalized.supportsNonRealTime = false;
+        }
+
         // Ensure version is in the format we expect
         if (!normalized.version || normalized.version === "0") {
             normalized.version = "1.0.0";
         }
-        
+
         // Ensure author has required structure
         if (typeof normalized.author === 'string') {
             normalized.author = { name: normalized.author, email: '' };
@@ -296,10 +345,10 @@ export class ExportImportService {
         } else if (!normalized.author) {
             normalized.author = { name: 'Unknown', email: '' };
         }
-        
+
         // Preserve custom actions and vendor properties
         // These are valid in OGraf but optional in our editor
-        
+
         return normalized;
     }
 
@@ -448,65 +497,25 @@ customElements.define('${safeId}-graphic', ${className});
     }
 
     /**
-     * Validate OGraf template
+     * Validate an OGraf template against the EBU OGraf v1 schema.
+     *
+     * This delegates to SchemaValidator, which is the single source of truth for
+     * the "valid" verdict. The old hand-rolled field/grep checks have been
+     * retired. Component-portability source checks are warnings, never failures
+     * (runtime proof is owned by the PM-006 module-load smoke test).
+     *
+     * @returns {{ isValid: boolean, errors: string[], warnings: string[] }}
      */
     validateOGrafTemplate(manifest, component) {
-        const errors = [];
-        
-        // Validate manifest - be more permissive to handle EBU examples
-        if (!manifest.$schema) {
-            // Warning but not error - some examples might not have this
-        }
-        
-        if (!manifest.id) {
-            errors.push('Missing id property');
-        } else if (!/^[a-z0-9-_]+$/.test(manifest.id)) {
-            errors.push('Invalid id format. Use lowercase letters, numbers, hyphens, and underscores only.');
-        }
-        
-        if (!manifest.name) {
-            errors.push('Missing name property');
-        }
-        
-        if (!manifest.main) {
-            errors.push('Missing main property');
-        }
-        
-        // Be more flexible with boolean checks
-        if (manifest.supportsRealTime !== undefined && typeof manifest.supportsRealTime !== 'boolean') {
-            errors.push('supportsRealTime must be a boolean');
-        }
-        
-        if (manifest.supportsNonRealTime !== undefined && typeof manifest.supportsNonRealTime !== 'boolean') {
-            errors.push('supportsNonRealTime must be a boolean');
-        }
-        
-        // Validate schema - allow missing schema for simple imports
-        if (manifest.schema && manifest.schema.properties) {
-            // Schema exists and has properties - validate structure
-            if (typeof manifest.schema.properties !== 'object') {
-                errors.push('Schema properties must be an object');
-            }
-        } else if (manifest.schema) {
-            // Schema exists but no properties
-        }
-        
-        // Validate component (basic check) - only if component is provided
-        if (component) {
-            if (!component.includes('HTMLElement')) {
-                errors.push('Component must extend HTMLElement');
-            }
-            
-            const requiredMethods = ['load', 'dispose', 'playAction', 'stopAction', 'updateAction'];
-            const missingMethods = requiredMethods.filter(method => !component.includes(method));
-            if (missingMethods.length > 0) {
-                // Don't error on missing methods if we're generating the component
-            }
-        }
-        
+        const result = getSchemaValidator().validateManifest(manifest, {
+            componentSource: component
+        });
+        const flatten = (list) =>
+            list.map((item) => (item.path ? `${item.path}: ${item.message}` : item.message));
         return {
-            isValid: errors.length === 0,
-            errors: errors
+            isValid: result.valid,
+            errors: flatten(result.errors),
+            warnings: flatten(result.warnings)
         };
     }
 

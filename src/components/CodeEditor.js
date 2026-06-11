@@ -1,6 +1,7 @@
 // Wire Monaco's web workers (via Vite) before any Monaco code loads, so the
 // language services don't throw "Unexpected usage".
 import '../monaco-environment.js';
+import { getSchemaValidator } from '../services/SchemaValidator.js';
 
 export class CodeEditor {
     constructor(containerElement, templateManager) {
@@ -42,6 +43,7 @@ export class CodeEditor {
             tabsContainer.innerHTML = `
                 <button class="code-tab-btn active" data-tab="manifest">Manifest</button>
                 <button class="code-tab-btn" data-tab="component">Component</button>
+                <span class="manifest-validity-badge" data-state="unknown" title="OGraf schema validation status">No template</span>
             `;
             codeEditorDiv.appendChild(tabsContainer);
         }
@@ -211,6 +213,8 @@ export class CodeEditor {
                 // Simple textarea
                 this.manifestEditor.value = manifestJson;
             }
+            // Refresh the persistent badge for the freshly loaded manifest.
+            this.updateValidationBadge(this.getManifestValidation());
         }
     }
 
@@ -256,6 +260,9 @@ export class CodeEditor {
                 this.componentEditor.value = componentMessage;
             }
         }
+
+        // No template selected: reset the badge to its neutral state.
+        this.updateValidationBadge(null);
     }
 
     onManifestChange() {
@@ -274,9 +281,13 @@ export class CodeEditor {
             if (template) {
                 template.manifest = manifest;
                 this.templateManager.saveToStorage();
+                // The persistent badge is the honest signal; refresh it on every
+                // edit. The transient toast stays for quick confirmation.
+                this.updateValidationBadge(this.getManifestValidation());
                 this.showValidationMessage('Manifest updated successfully', 'success');
             }
         } catch (error) {
+            this.updateValidationBadge({ parseError: error.message });
             this.showValidationMessage(`Invalid JSON: ${error.message}`, 'error');
         }
     }
@@ -330,53 +341,100 @@ export class CodeEditor {
         }
     }
 
-    validateCode() {
+    // Read the current manifest editor text and validate it against the OGraf
+    // schema. Returns null when there is no template / the text is not JSON yet,
+    // otherwise the SchemaValidator result plus a parse flag.
+    getManifestValidation() {
         const template = this.templateManager.getCurrentTemplate();
-        if (!template) return;
+        if (!template) return null;
+        if (!this.manifestEditor) return null;
 
-        let errors = [];
+        const manifestJson = this.monaco && this.manifestEditor.getValue
+            ? this.manifestEditor.getValue()
+            : this.manifestEditor.value;
 
-        // Validate manifest
-        if (this.currentTab === 'manifest' && this.manifestEditor) {
-            try {
-                const manifest = JSON.parse(this.manifestEditor.value);
-                
-                // Basic validation
-                if (!manifest.id) errors.push('Missing id');
-                if (!manifest.name) errors.push('Missing name');
-                if (!manifest.main) errors.push('Missing main');
-                if (typeof manifest.supportsRealTime !== 'boolean') errors.push('supportsRealTime must be boolean');
-                if (typeof manifest.supportsNonRealTime !== 'boolean') errors.push('supportsNonRealTime must be boolean');
-                
-            } catch (error) {
-                errors.push(`Invalid JSON: ${error.message}`);
-            }
+        let manifest;
+        try {
+            manifest = JSON.parse(manifestJson);
+        } catch (error) {
+            return { parseError: error.message };
         }
 
-        // Validate component
-        if (this.currentTab === 'component' && this.componentEditor) {
-            const component = this.componentEditor.value;
-            
-            if (!component.includes('HTMLElement')) {
-                errors.push('Component must extend HTMLElement');
-            }
-            
-            const requiredMethods = ['load', 'dispose', 'playAction', 'stopAction', 'updateAction'];
-            for (const method of requiredMethods) {
-                if (!component.includes(method)) {
-                    errors.push(`Missing required method: ${method}`);
-                }
-            }
-        }
+        const componentSource = this.monaco && this.componentEditor && this.componentEditor.getValue
+            ? this.componentEditor.getValue()
+            : (template.webComponent || (this.componentEditor && this.componentEditor.value) || '');
 
-        // Show validation results
-        if (errors.length === 0) {
-            this.showValidationMessage('Code is valid', 'success');
-        } else {
-            this.showValidationMessage(`Validation errors: ${errors.join(', ')}`, 'error');
-        }
+        const result = getSchemaValidator().validateManifest(manifest, {
+            componentSource
+        });
+        return { ...result, parseError: null };
+    }
 
-        return errors.length === 0;
+    // The persistent, honest valid/invalid badge in the editor tab bar. The
+    // schema result is the source of truth; warnings do not flip it to invalid.
+    updateValidationBadge(validation) {
+        const badge = this.container.querySelector('.manifest-validity-badge');
+        if (!badge) return;
+
+        if (!validation) {
+            badge.dataset.state = 'unknown';
+            badge.textContent = 'No template';
+            badge.title = 'Select a template to validate its manifest';
+            return;
+        }
+        if (validation.parseError) {
+            badge.dataset.state = 'invalid';
+            badge.textContent = 'Invalid JSON';
+            badge.title = validation.parseError;
+            return;
+        }
+        if (!validation.valid) {
+            const count = validation.errors.length;
+            badge.dataset.state = 'invalid';
+            badge.textContent = `${count} schema ${count === 1 ? 'error' : 'errors'}`;
+            badge.title = validation.errors.map((e) => (e.path ? `${e.path}: ${e.message}` : e.message)).join('\n');
+            return;
+        }
+        const warnCount = validation.warnings.length;
+        if (warnCount > 0) {
+            badge.dataset.state = 'warning';
+            badge.textContent = `Valid, ${warnCount} ${warnCount === 1 ? 'warning' : 'warnings'}`;
+            badge.title = validation.warnings.map((w) => (w.path ? `${w.path}: ${w.message}` : w.message)).join('\n');
+            return;
+        }
+        badge.dataset.state = 'valid';
+        badge.textContent = 'Valid OGraf';
+        badge.title = 'Manifest is valid against the EBU OGraf v1 schema';
+    }
+
+    validateCode() {
+        const validation = this.getManifestValidation();
+        this.updateValidationBadge(validation);
+
+        if (!validation) {
+            this.showValidationMessage('Select a template to validate', 'warning');
+            return false;
+        }
+        if (validation.parseError) {
+            this.showValidationMessage(`Invalid JSON: ${validation.parseError}`, 'error');
+            return false;
+        }
+        if (!validation.valid) {
+            const detail = validation.errors
+                .map((e) => (e.path ? `${e.path}: ${e.message}` : e.message))
+                .join('; ');
+            this.showValidationMessage(`Schema errors: ${detail}`, 'error');
+            return false;
+        }
+        if (validation.warnings.length > 0) {
+            const detail = validation.warnings
+                .map((w) => (w.path ? `${w.path}: ${w.message}` : w.message))
+                .join('; ');
+            this.showValidationMessage(`Valid, with warnings: ${detail}`, 'warning');
+            return true;
+        }
+        this.showValidationMessage('Manifest is valid against the OGraf schema', 'success');
+        return true;
     }
 
     insertSnippet(snippetName) {
